@@ -28,6 +28,9 @@ public:
     void setParallelizeInitialIndividualPlans(bool enabled) {
         parallelize_initial_individual_plans_ = enabled;
     }
+    void setInitialSolutionOr(bool enabled) {
+        initial_solution_or_ = enabled;
+    }
     void setParallelStrategy(ParallelArcParallelStrategy strategy) {
         parallel_strategy_ = strategy;
     }
@@ -92,6 +95,7 @@ private:
 
     unsigned worker_processes_ = 2;
     bool parallelize_initial_individual_plans_ = true;
+    bool initial_solution_or_ = false;
     unsigned initial_individual_worker_processes_used_ = 0;
     std::uint64_t initial_individual_result_bytes_read_ = 0;
     std::uint64_t initial_individual_command_bytes_written_ = 0;
@@ -100,9 +104,14 @@ private:
     std::uint64_t initial_individual_command_write_ns_ = 0;
     std::uint64_t initial_individual_result_read_ns_ = 0;
     std::uint64_t initial_individual_parent_wait_ns_ = 0;
+    std::uint64_t initial_individual_duplicate_attempts_ = 0;
     std::vector<InitialIndividualWorkerStats> initial_individual_worker_stats_;
+    // Only Synchronous is currently supported; Asynchronous is reported as
+    // unsupported if selected.
     ParallelArcParallelStrategy parallel_strategy_ =
         ParallelArcParallelStrategy::Synchronous;
+    // Only Greedy is currently supported; SpatialDistribution is reported as
+    // unsupported if selected.
     ParallelArcConflictSelectionStrategy conflict_selection_strategy_ =
         ParallelArcConflictSelectionStrategy::Greedy;
     ParallelArcConflictFindMode conflict_find_mode_ =

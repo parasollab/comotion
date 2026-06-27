@@ -88,6 +88,7 @@ struct AppOptions {
     unsigned int or_parallel_worker_processes = 1;
     unsigned int parallel_arc_worker_processes = 2;
     bool parallel_arc_parallel_initial_plans = true;
+    bool parallel_arc_initial_solution_or = false;
     bool parallel_arc_repair_duplicate_attempts = true;
     std::string parallel_arc_strategy = "synchronous";
     std::string parallel_arc_conflict_strategy = "greedy";
@@ -531,6 +532,7 @@ void printUsage(const char *prog) {
         << "  --or-parallel-worker-processes <n>\n"
         << "  --parallel-arc-worker-processes <n>\n"
         << "  --parallel-arc-parallel-initial-plans / --no-parallel-arc-parallel-initial-plans (default: on)\n"
+        << "  --parallel-arc-initial-solution-or / --no-parallel-arc-initial-solution-or (default: off)\n"
         << "  --parallel-arc-repair-duplicate-attempts / --no-parallel-arc-repair-duplicate-attempts (default: on)\n"
         << "  --parallel-arc-strategy <synchronous|asynchronous>\n"
         << "  --parallel-arc-conflict-strategy <greedy|spatial_distribution>\n"
@@ -672,6 +674,10 @@ AppOptions parseArgs(int argc, char **argv) {
             options.parallel_arc_parallel_initial_plans = true;
         } else if (arg == "--no-parallel-arc-parallel-initial-plans") {
             options.parallel_arc_parallel_initial_plans = false;
+        } else if (arg == "--parallel-arc-initial-solution-or") {
+            options.parallel_arc_initial_solution_or = true;
+        } else if (arg == "--no-parallel-arc-initial-solution-or") {
+            options.parallel_arc_initial_solution_or = false;
         } else if (arg == "--parallel-arc-repair-duplicate-attempts") {
             options.parallel_arc_repair_duplicate_attempts = true;
         } else if (arg == "--no-parallel-arc-repair-duplicate-attempts") {

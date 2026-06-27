@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         help="Pass --arc-local-composite-use-makespan-metric to ARC/AOARC variants.",
     )
     parser.add_argument(
+        "--parallel-arc-initial-solution-or",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable duplicate OR attempts for ParallelARC initial individual solutions.",
+    )
+    parser.add_argument(
         "--aorrtc-restart-effort",
         type=int,
         help="Optional CompositeAORRTC internal sample/vertex cap.",
@@ -80,6 +86,8 @@ def main() -> int:
             "--aorrtc-restart-effort",
             str(args.aorrtc_restart_effort),
         )
+    if args.parallel_arc_initial_solution_or:
+        extra_args["parallel_arc"] = ("--parallel-arc-initial-solution-or",)
     variants = variants_from_algorithms(
         args.algorithms,
         extra_args_by_algorithm=extra_args,

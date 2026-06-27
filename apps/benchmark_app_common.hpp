@@ -549,6 +549,8 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
             planner->setWorkerProcesses(options.parallel_arc_worker_processes);
             planner->setParallelizeInitialIndividualPlans(
                 options.parallel_arc_parallel_initial_plans);
+            planner->setInitialSolutionOr(
+                options.parallel_arc_initial_solution_or);
             planner->setRepairDuplicateAttempts(
                 options.parallel_arc_repair_duplicate_attempts);
             if (options.parallel_arc_strategy == "synchronous") {

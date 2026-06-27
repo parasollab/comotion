@@ -156,6 +156,23 @@ bool testParallelArcSolvesIndependentConflicts() {
                         "parallel_arc_initial_individual_workers", 0) == 2)) {
         return false;
     }
+    if (!expectTrue("ParallelARC default initial solution OR off",
+                    !planner_json.value("parallel_arc_initial_solution_or",
+                                        true))) {
+        return false;
+    }
+    if (!expectTrue("ParallelARC default initial OR parallelism off",
+                    !planner_json.value(
+                        "parallel_arc_initial_individual_or_parallelism",
+                        true))) {
+        return false;
+    }
+    if (!expectTrue("ParallelARC default initial duplicate attempt count",
+                    planner_json.value(
+                        "parallel_arc_initial_individual_duplicate_attempt_count",
+                        1) == 0)) {
+        return false;
+    }
     if (!expectTrue("ParallelARC default conflict finder horizon",
                     planner_json.value("parallel_arc_conflict_find_horizon",
                                        0) == 400)) {
@@ -225,6 +242,58 @@ bool testParallelArcSolvesIndependentConflicts() {
         return false;
     }
     return true;
+}
+
+bool testParallelArcInitialSolutionOrCanBeEnabled() {
+    comotion::seedOmplGlobalFromUserPlanningSeed(37);
+
+    auto problem = std::make_shared<comotion::MultiRobotProblem>(
+        comotion::CollisionChecker::Backend::Spheres);
+    problem->setResolution(8);
+    problem->setVmax(1.0);
+
+    problem->addRobot(makeSphereRobot(), {-4.0, 0.0, 0.0}, {4.0, 0.0, 0.0});
+
+    comotion::ParallelARC planner;
+    planner.setPlanningSeed(37);
+    planner.setProblem(problem);
+    planner.setWorkerProcesses(3);
+    planner.setInitialSolutionOr(true);
+
+    const auto status = planner.solve(10.0);
+    if (!expectTrue("ParallelARC initial solution OR exact solution",
+                    status == ob::PlannerStatus::EXACT_SOLUTION)) {
+        return false;
+    }
+
+    const auto planner_json = planner.plannerStatsJson();
+    if (!expectTrue("ParallelARC initial solution OR reports enabled",
+                    planner_json.value("parallel_arc_initial_solution_or",
+                                       false))) {
+        return false;
+    }
+    if (!expectTrue("ParallelARC initial solution OR uses all workers",
+                    planner_json.value(
+                        "parallel_arc_initial_individual_workers", 0) == 3)) {
+        return false;
+    }
+    if (!expectTrue("ParallelARC initial solution OR launches duplicates",
+                    planner_json.value(
+                        "parallel_arc_initial_individual_duplicate_attempt_count",
+                        0) == 2)) {
+        return false;
+    }
+    if (!expectTrue("ParallelARC initial solution OR parallelism active",
+                    planner_json.value(
+                        "parallel_arc_initial_individual_or_parallelism",
+                        false))) {
+        return false;
+    }
+    return expectTrue(
+        "ParallelARC initial solution OR assignment strategy",
+        planner_json.value(
+            "parallel_arc_initial_individual_assignment_strategy", "") ==
+            "dynamic_robot_queue_with_or");
 }
 
 bool testParallelArcInnerOrRepairsSingleConflict() {
@@ -682,6 +751,8 @@ int main() {
     if (!testParallelArcPerPairBatchRestartState())
         return 1;
     if (!testParallelArcSolvesIndependentConflicts())
+        return 1;
+    if (!testParallelArcInitialSolutionOrCanBeEnabled())
         return 1;
     if (!testParallelArcInnerOrRepairsSingleConflict())
         return 1;

@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated planner algorithms to compare.",
     )
     parser.add_argument(
+        "--parallel-arc-initial-solution-or",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable duplicate OR attempts for ParallelARC initial individual solutions.",
+    )
+    parser.add_argument(
         "--seeds",
         default="0",
         help="Comma-separated seed list. Use --num-seeds for 0..N-1.",
@@ -85,7 +91,13 @@ def main() -> int:
     args = parse_args()
     output_root = args.output_root or DEFAULT_RESULTS_DIR / f"feasibility_{timestamp()}"
     cases = parse_cases(args.cases, DEFAULT_FEASIBILITY_CASES)
-    variants = variants_from_algorithms(args.algorithms)
+    extra_args: dict[str, tuple[str, ...]] = {}
+    if args.parallel_arc_initial_solution_or:
+        extra_args["parallel_arc"] = ("--parallel-arc-initial-solution-or",)
+    variants = variants_from_algorithms(
+        args.algorithms,
+        extra_args_by_algorithm=extra_args,
+    )
     seeds = list(range(args.num_seeds)) if args.num_seeds is not None else parse_int_csv(args.seeds)
     task_indices = parse_int_csv(args.task_indices)
     specs = build_trial_specs(

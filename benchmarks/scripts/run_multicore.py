@@ -37,6 +37,12 @@ def parse_args() -> argparse.Namespace:
         default="2,4",
         help="Comma-separated ParallelARC worker-process counts.",
     )
+    parser.add_argument(
+        "--parallel-arc-initial-solution-or",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable duplicate OR attempts for ParallelARC initial individual solutions.",
+    )
     parser.add_argument("--seeds", default="0")
     parser.add_argument("--num-seeds", type=int)
     parser.add_argument("--task-indices", default="0")
@@ -60,7 +66,10 @@ def main() -> int:
     args = parse_args()
     output_root = args.output_root or DEFAULT_RESULTS_DIR / f"multicore_{timestamp()}"
     cases = parse_cases(args.cases, DEFAULT_MULTICORE_CASES)
-    variants = multicore_variants(parse_int_csv(args.worker_counts))
+    variants = multicore_variants(
+        parse_int_csv(args.worker_counts),
+        parallel_arc_initial_solution_or=args.parallel_arc_initial_solution_or,
+    )
     seeds = list(range(args.num_seeds)) if args.num_seeds is not None else parse_int_csv(args.seeds)
     task_indices = parse_int_csv(args.task_indices)
     specs = build_trial_specs(

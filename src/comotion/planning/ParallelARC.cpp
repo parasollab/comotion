@@ -100,8 +100,9 @@ std::uint32_t workerPlanningSeed(std::uint32_t planner_seed, int batch_index,
 }
 
 std::uint32_t initialIndividualPlanningSeed(std::uint32_t planner_seed,
-                                            int robot_index) {
-    const int salt = 1003000000 + robot_index;
+                                            int robot_index,
+                                            int attempt_index) {
+    const int salt = 1003000000 + robot_index * 4096 + attempt_index;
     return static_cast<std::uint32_t>(
         comotion::omplLocalSeedFromUserPlanningSeed(planner_seed, salt));
 }
@@ -179,12 +180,16 @@ struct WorkerResult {
 struct InitialPlanCommand {
     bool quit = false;
     int robot_id = -1;
+    int attempt_index = 0;
+    std::uint32_t planning_seed = 0;
     double time_budget_seconds = 0.0;
 
     template <class Archive>
     void serialize(Archive &ar, const unsigned int /*version*/) {
         ar & quit;
         ar & robot_id;
+        ar & attempt_index;
+        ar & planning_seed;
         ar & time_budget_seconds;
     }
 };
@@ -192,6 +197,7 @@ struct InitialPlanCommand {
 struct InitialPlanResult {
     int worker_index = -1;
     int robot_id = -1;
+    int attempt_index = 0;
     bool success = false;
     std::uint64_t worker_wall_ns = 0;
     std::uint64_t solve_ns = 0;
@@ -204,6 +210,7 @@ struct InitialPlanResult {
     void serialize(Archive &ar, const unsigned int /*version*/) {
         ar & worker_index;
         ar & robot_id;
+        ar & attempt_index;
         ar & success;
         ar & worker_wall_ns;
         ar & solve_ns;
@@ -458,7 +465,7 @@ ParallelARC::selectConflictBatch(
         break;
     case ParallelArcConflictSelectionStrategy::SpatialDistribution:
         throw std::logic_error(
-            "ParallelARC spatial conflict selection is not implemented yet");
+            "ParallelARC spatial conflict selection is not yet supported");
     }
 
     std::vector<BatchConflictTask> ordered;
@@ -531,8 +538,7 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
     const int robot_count = problem_->numRobots();
     if (robot_count <= 0)
         return false;
-    const unsigned effective_workers = std::min(
-        std::max(1u, worker_count), static_cast<unsigned>(robot_count));
+    const unsigned effective_workers = std::max(1u, worker_count);
     if (effective_workers <= 1)
         return planIndividualPaths(solve_start, timeLimit, working_paths);
 
@@ -558,6 +564,7 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
         pid_t pid = -1;
         bool busy = false;
         int robot_id = -1;
+        int attempt_index = 0;
     };
 
     const auto closeFd = [](int &fd) {
@@ -578,6 +585,7 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
     initial_individual_command_write_ns_ = 0;
     initial_individual_result_read_ns_ = 0;
     initial_individual_parent_wait_ns_ = 0;
+    initial_individual_duplicate_attempts_ = 0;
     initial_individual_worker_stats_.assign(effective_workers, {});
 
     const auto initial_wall_start = Clock::now();
@@ -637,9 +645,14 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
                 InitialPlanResult result;
                 result.worker_index = static_cast<int>(i);
                 result.robot_id = command.robot_id;
+                result.attempt_index = command.attempt_index;
                 try {
-                    const auto local_seed = initialIndividualPlanningSeed(
-                        planning_seed_, command.robot_id);
+                    const auto local_seed =
+                        command.planning_seed != 0
+                            ? command.planning_seed
+                            : initialIndividualPlanningSeed(
+                                  planning_seed_, command.robot_id,
+                                  command.attempt_index);
                     setPlanningSeed(local_seed);
                     const auto worker_wall_start = Clock::now();
                     const auto plan_result = planIndividualPath(
@@ -715,14 +728,27 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
             "ParallelARC failed to launch initial-planning worker processes");
     }
 
+    std::vector<char> robot_completed(static_cast<std::size_t>(robot_count), 0);
+    std::vector<unsigned> robot_live_attempts(
+        static_cast<std::size_t>(robot_count), 0);
+    std::vector<unsigned> robot_attempts_launched(
+        static_cast<std::size_t>(robot_count), 0);
+
     auto assignRobot = [&](InitialWorkerState &state, int robot_id) {
+        if (robot_id < 0 || robot_id >= robot_count)
+            return false;
+        const auto robot_index = static_cast<std::size_t>(robot_id);
         const double elapsed_s =
             std::chrono::duration<double>(Clock::now() - solve_start).count();
         const double remaining = timeLimit - elapsed_s;
         if (remaining <= 0.0)
             return false;
+        const unsigned attempt_index = robot_attempts_launched[robot_index]++;
         InitialPlanCommand command;
         command.robot_id = robot_id;
+        command.attempt_index = static_cast<int>(attempt_index);
+        command.planning_seed = initialIndividualPlanningSeed(
+            planning_seed_, robot_id, static_cast<int>(attempt_index));
         command.time_budget_seconds = remaining;
         std::uint64_t bytes_written = 0;
         const auto write_start = Clock::now();
@@ -743,16 +769,45 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
         initial_individual_command_bytes_written_ += bytes_written;
         state.busy = true;
         state.robot_id = robot_id;
+        state.attempt_index = static_cast<int>(attempt_index);
+        ++robot_live_attempts[robot_index];
+        if (attempt_index > 0)
+            ++initial_individual_duplicate_attempts_;
         return true;
     };
 
     int next_robot = 0;
+    int duplicate_cursor = 0;
     int completed = 0;
     bool failed = false;
+
+    auto nextDuplicateRobot = [&]() -> std::optional<int> {
+        if (!initial_solution_or_ || robot_count <= 0)
+            return std::nullopt;
+        for (int offset = 0; offset < robot_count; ++offset) {
+            const int robot_id = (duplicate_cursor + offset) % robot_count;
+            const auto robot_index = static_cast<std::size_t>(robot_id);
+            if (robot_completed[robot_index] ||
+                robot_live_attempts[robot_index] == 0) {
+                continue;
+            }
+            duplicate_cursor = (robot_id + 1) % robot_count;
+            return robot_id;
+        }
+        return std::nullopt;
+    };
+
+    auto assignNextWork = [&](InitialWorkerState &state) {
+        if (next_robot < robot_count)
+            return assignRobot(state, next_robot++);
+        const auto duplicate_robot = nextDuplicateRobot();
+        if (duplicate_robot.has_value())
+            return assignRobot(state, *duplicate_robot);
+        return true;
+    };
+
     for (auto &state : states) {
-        if (next_robot >= robot_count)
-            break;
-        if (!assignRobot(state, next_robot++)) {
+        if (!assignNextWork(state)) {
             failed = true;
             break;
         }
@@ -827,9 +882,10 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
             }
             initial_individual_result_bytes_read_ += bytes_read;
             const int expected_robot_id = state.robot_id;
+            const int expected_attempt_index = state.attempt_index;
             state.busy = false;
             state.robot_id = -1;
-            ++completed;
+            state.attempt_index = 0;
 
             IndividualPlanResult stats_result;
             stats_result.solve_ns = result.solve_ns;
@@ -837,24 +893,36 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
             recordInitialIndividualPlanStats(stats_result);
             worker_cpu_seconds_total += result.cpu_seconds;
 
-            if (!result.success || result.robot_id != expected_robot_id ||
-                result.robot_id < 0 || result.robot_id >= robot_count ||
-                result.path.empty()) {
+            if (expected_robot_id < 0 || expected_robot_id >= robot_count ||
+                result.robot_id != expected_robot_id ||
+                result.attempt_index != expected_attempt_index) {
                 failed = true;
                 break;
             }
 
-            const auto robot_index = static_cast<std::size_t>(result.robot_id);
-            const auto arrival_timestep =
-                static_cast<std::uint64_t>(result.path.arrival_timestep());
-            working_paths[robot_index] = std::move(result.path);
-            true_arrival_timesteps_[robot_index] = arrival_timestep;
+            const auto robot_index = static_cast<std::size_t>(expected_robot_id);
+            if (robot_live_attempts[robot_index] > 0)
+                --robot_live_attempts[robot_index];
 
-            if (next_robot < robot_count) {
-                if (!assignRobot(state, next_robot++)) {
+            if (!robot_completed[robot_index]) {
+                if (result.success && !result.path.empty()) {
+                    const auto arrival_timestep = static_cast<std::uint64_t>(
+                        result.path.arrival_timestep());
+                    working_paths[robot_index] = std::move(result.path);
+                    true_arrival_timesteps_[robot_index] = arrival_timestep;
+                    robot_completed[robot_index] = 1;
+                    ++completed;
+                } else if (robot_live_attempts[robot_index] == 0) {
                     failed = true;
                     break;
                 }
+            }
+
+            if (completed >= robot_count)
+                break;
+            if (!assignNextWork(state)) {
+                failed = true;
+                break;
             }
         }
     }
@@ -865,7 +933,12 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
         return false;
     }
 
-    const bool shutdown_ok = shutdownWorkers(false);
+    const bool workers_busy =
+        std::any_of(states.begin(), states.end(),
+                    [](const InitialWorkerState &state) {
+                        return state.busy;
+                    });
+    const bool shutdown_ok = shutdownWorkers(workers_busy);
     if (!shutdown_ok) {
         finishInitialTiming();
         return false;
@@ -887,6 +960,7 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
     initial_individual_command_write_ns_ = 0;
     initial_individual_result_read_ns_ = 0;
     initial_individual_parent_wait_ns_ = 0;
+    initial_individual_duplicate_attempts_ = 0;
     initial_individual_worker_stats_.clear();
     const auto solve_start = Clock::now();
     const unsigned effective_workers = std::max(1u, worker_processes_);
@@ -903,12 +977,23 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             parallelize_initial_individual_plans_;
         stats["parallel_arc_initial_individual_workers"] =
             initial_individual_worker_processes_used_;
+        stats["parallel_arc_initial_solution_or"] = initial_solution_or_;
+        stats["parallel_arc_initial_individual_duplicate_attempts_enabled"] =
+            initial_solution_or_;
+        stats["parallel_arc_initial_individual_or_parallelism"] =
+            initial_individual_duplicate_attempts_ > 0;
+        stats["parallel_arc_initial_individual_duplicate_attempts"] =
+            initial_individual_duplicate_attempts_;
+        stats["parallel_arc_initial_individual_duplicate_attempt_count"] =
+            initial_individual_duplicate_attempts_;
         stats["parallel_arc_initial_individual_process_lifecycle"] =
             initial_individual_worker_processes_used_ > 0 ? "persistent_pool"
                                                           : "";
         stats["parallel_arc_initial_individual_assignment_strategy"] =
-            initial_individual_worker_processes_used_ > 0 ? "dynamic_robot_queue"
-                                                          : "";
+            initial_individual_worker_processes_used_ > 0
+                ? (initial_solution_or_ ? "dynamic_robot_queue_with_or"
+                                        : "dynamic_robot_queue")
+                : "";
         stats["parallel_arc_initial_individual_ipc"] =
             initial_individual_worker_processes_used_ > 0 ? "pipes" : "";
         stats["parallel_arc_initial_individual_payload"] =
@@ -1015,9 +1100,14 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         setPlannerStatsJson(std::move(stats));
     };
 
-    const unsigned initial_workers = std::min(
-        effective_workers, static_cast<unsigned>(
-                               std::max(0, problem_->numRobots())));
+    const auto robot_count_for_initial =
+        static_cast<unsigned>(std::max(0, problem_->numRobots()));
+    const unsigned initial_workers =
+        robot_count_for_initial == 0
+            ? 0
+            : (initial_solution_or_
+                   ? effective_workers
+                   : std::min(effective_workers, robot_count_for_initial));
     const bool use_parallel_initial =
         parallelize_initial_individual_plans_ && initial_workers > 1;
     const bool initial_plans_ok =
@@ -1065,7 +1155,7 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             break;
         case ParallelArcParallelStrategy::Asynchronous:
             throw std::logic_error(
-                "ParallelARC asynchronous scheduling is not implemented yet");
+                "ParallelARC asynchronous scheduling is not yet supported");
         }
 
         CompositePathValidationOptions options = conflictScanOptions();

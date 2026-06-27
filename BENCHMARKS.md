@@ -87,6 +87,12 @@ python3 benchmarks/scripts/run_multicore.py \
 This compares ARC against ParallelARC with the requested worker-process counts
 and writes cumulative success plots.
 
+By default, ParallelARC plans different robots in parallel during initial
+solution construction but does not duplicate a robot's initial query. Add
+`--parallel-arc-initial-solution-or` to any runner, or to a direct
+`--algorithm parallel_arc` executable run, to let spare initial-planning workers
+race duplicate attempts and keep the first successful path.
+
 ## Case Catalog
 
 The runners expose these benchmark cases:

@@ -95,6 +95,7 @@ int main() {
 
     comotion::ParallelARC parallel_arc;
     parallel_arc.setWorkerProcesses(1);
+    parallel_arc.setInitialSolutionOr(false);
     parallel_arc.setParallelStrategy(
         comotion::ParallelArcParallelStrategy::Synchronous);
 

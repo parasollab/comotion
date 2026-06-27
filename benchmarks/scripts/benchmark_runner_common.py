@@ -274,7 +274,11 @@ def variants_from_algorithms(
     return variants
 
 
-def multicore_variants(worker_counts: Sequence[int]) -> list[PlannerVariant]:
+def multicore_variants(
+    worker_counts: Sequence[int],
+    *,
+    parallel_arc_initial_solution_or: bool = False,
+) -> list[PlannerVariant]:
     variants = [
         PlannerVariant(label="ARC", algorithm="arc", slug="arc"),
     ]
@@ -286,7 +290,15 @@ def multicore_variants(worker_counts: Sequence[int]) -> list[PlannerVariant]:
                 label=f"ParallelARC-{workers}",
                 algorithm="parallel_arc",
                 slug=f"parallel_arc_{workers}",
-                extra_args=("--parallel-arc-worker-processes", str(workers)),
+                extra_args=(
+                    "--parallel-arc-worker-processes",
+                    str(workers),
+                    *(
+                        ("--parallel-arc-initial-solution-or",)
+                        if parallel_arc_initial_solution_or
+                        else ()
+                    ),
+                ),
             )
         )
     return variants
