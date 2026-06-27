@@ -34,6 +34,7 @@ These interfaces are installed, but their details may change more readily than
 the stable API:
 
 - `ParallelARC`
+- `ScheduleARC` schedule metadata types and conflict reporting hooks
 - `CompositeAORRTC`
 - `STCBS`
 - `USTRRTstar`

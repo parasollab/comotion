@@ -119,6 +119,7 @@ set(COMOTION_PUBLIC_HEADERS
   comotion/planning/PlanningRng.h
   comotion/planning/PlanningSeed.h
   comotion/planning/PrioritizedSTRRT.h
+  comotion/planning/ScheduleARC.h
   comotion/planning/STCBS.h
   comotion/planning/USTRRTstar.h
   comotion/robot/FlyingSphere.h

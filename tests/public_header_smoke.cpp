@@ -18,6 +18,7 @@
 #include "comotion/planning/PlanningRng.h"
 #include "comotion/planning/PlanningSeed.h"
 #include "comotion/planning/PrioritizedSTRRT.h"
+#include "comotion/planning/ScheduleARC.h"
 #include "comotion/planning/STCBS.h"
 #include "comotion/planning/USTRRTstar.h"
 #include "comotion/robot/FlyingSphere.h"
@@ -152,6 +153,9 @@ int main() {
     prioritized_strrt.setStrrtRewiring(comotion::StrrtRewiring::Off);
     prioritized_strrt.setPathSimplificationOptions(simplification_options);
 
+    comotion::ScheduleARC schedule_arc;
+    schedule_arc.setInitialWindow(1);
+
     comotion::STCBS stcbs;
     stcbs.setRewireMode(comotion::USTRRTstar::RewireMode::KNearest);
 
@@ -188,6 +192,7 @@ int main() {
     (void)drrt_star;
     (void)parallel_arc;
     (void)prioritized_strrt;
+    (void)schedule_arc;
     (void)stcbs;
     (void)ust_params;
     (void)branch_constraint;
