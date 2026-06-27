@@ -15,6 +15,19 @@ struct CollisionSphere {
     int link_index;
 };
 
+struct CollisionBox {
+    Eigen::Affine3d origin = Eigen::Affine3d::Identity();
+    Eigen::Vector3d size = Eigen::Vector3d::Ones();
+    int link_index = -1;
+};
+
+struct CollisionCylinder {
+    Eigen::Affine3d origin = Eigen::Affine3d::Identity();
+    double radius = 0.0;
+    double length = 0.0;
+    int link_index = -1;
+};
+
 // Triangle mesh collision entry from URDF (path resolved at load time).
 struct CollisionMesh {
     Eigen::Affine3d origin = Eigen::Affine3d::Identity();
@@ -39,6 +52,8 @@ struct LinkInfo {
     int index;
     int parent_joint_index = -1;
     std::vector<CollisionSphere> collision_spheres;
+    std::vector<CollisionBox> collision_boxes;
+    std::vector<CollisionCylinder> collision_cylinders;
     std::vector<CollisionMesh> collision_meshes;
 };
 

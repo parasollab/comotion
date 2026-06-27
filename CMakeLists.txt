@@ -86,6 +86,14 @@ if(COMOTION_BUILD_TESTS)
     target_link_libraries(public_header_smoke PRIVATE comotion)
     add_test(NAME public_header_smoke COMMAND public_header_smoke)
 
+    add_executable(fcl_urdf_geometry_regression
+        tests/fcl_urdf_geometry_regression.cpp)
+    target_link_libraries(fcl_urdf_geometry_regression PRIVATE comotion)
+    add_test(NAME fcl_urdf_geometry_regression
+             COMMAND fcl_urdf_geometry_regression)
+    set_tests_properties(fcl_urdf_geometry_regression PROPERTIES
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+
     add_executable(path_timestep_semantics
         tests/path_timestep_semantics.cpp)
     target_link_libraries(path_timestep_semantics PRIVATE comotion)

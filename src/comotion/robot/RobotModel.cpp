@@ -8,25 +8,10 @@
 #include <algorithm>
 #include <stdexcept>
 #include <map>
-#include <cctype>
 
 namespace comotion {
 
 namespace pt = boost::property_tree;
-
-static bool meshFilenameIsColladaDae(const std::string &filename) {
-    if (filename.empty())
-        return false;
-    std::string p = filename;
-    size_t q = p.find('?');
-    if (q != std::string::npos)
-        p = p.substr(0, q);
-    std::filesystem::path fp(p);
-    std::string ext = fp.extension().string();
-    for (char &c : ext)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return ext == ".dae";
-}
 
 static std::string resolveMeshFilename(const std::string &filename,
                                         const std::string &urdf_dir) {
@@ -53,7 +38,7 @@ static std::string resolveMeshFilename(const std::string &filename,
 
 Eigen::Vector3d RobotModel::parseVec3(const std::string &s) {
     std::istringstream ss(s);
-    Eigen::Vector3d v;
+    Eigen::Vector3d v = Eigen::Vector3d::Zero();
     ss >> v.x() >> v.y() >> v.z();
     return v;
 }
@@ -120,18 +105,35 @@ void RobotModel::loadURDF(const std::string &urdf_path) {
                 continue;
             }
 
+            auto geom_box = child.second.get_child_optional("geometry.box");
+            if (geom_box) {
+                CollisionBox box;
+                box.origin = collision_origin;
+                box.size =
+                    parseVec3(geom_box->get<std::string>("<xmlattr>.size"));
+                box.link_index = link.index;
+                link.collision_boxes.push_back(std::move(box));
+                continue;
+            }
+
+            auto geom_cylinder =
+                child.second.get_child_optional("geometry.cylinder");
+            if (geom_cylinder) {
+                CollisionCylinder cylinder;
+                cylinder.origin = collision_origin;
+                cylinder.radius =
+                    geom_cylinder->get<double>("<xmlattr>.radius");
+                cylinder.length =
+                    geom_cylinder->get<double>("<xmlattr>.length");
+                cylinder.link_index = link.index;
+                link.collision_cylinders.push_back(std::move(cylinder));
+                continue;
+            }
+
             auto geom_mesh = child.second.get_child_optional("geometry.mesh");
             if (geom_mesh) {
                 std::string fname =
                     geom_mesh->get<std::string>("<xmlattr>.filename");
-                if (meshFilenameIsColladaDae(fname)) {
-                    throw std::runtime_error(
-                        "RobotModel::loadURDF: Collada (.dae) collision meshes are "
-                        "not supported yet (link \"" +
-                        link.name + "\", mesh \"" + fname +
-                        "\"). Only OBJ collision meshes are loaded for FCL. "
-                        "Use spherized URDFs or convert collision meshes to OBJ.");
-                }
                 CollisionMesh cm;
                 cm.origin = collision_origin;
                 cm.resolved_path = resolveMeshFilename(fname, urdf_dir);
