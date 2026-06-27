@@ -122,6 +122,7 @@ set(COMOTION_PUBLIC_HEADERS
   comotion/planning/STCBS.h
   comotion/planning/USTRRTstar.h
   comotion/robot/FlyingSphere.h
+  comotion/robot/GraspPlanner.h
   comotion/robot/IKSolver.h
   comotion/robot/RobotModel.h)
 

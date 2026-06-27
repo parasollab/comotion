@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <stdexcept>
 #include <map>
+#include <cctype>
+#include <utility>
 
 namespace comotion {
 
@@ -313,8 +315,59 @@ int RobotModel::linkIndex(const std::string &name) const {
     return -1;
 }
 
+void RobotModel::setAttachment(AttachedBody attachment) {
+    if (attachment.link_name.empty())
+        throw std::invalid_argument("RobotModel attachment requires a link name");
+    if (linkIndex(attachment.link_name) < 0)
+        throw std::invalid_argument("RobotModel attachment link not found: " +
+                                    attachment.link_name);
+    if (std::find(attachment.ignored_self_collision_links.begin(),
+                  attachment.ignored_self_collision_links.end(),
+                  attachment.link_name) ==
+        attachment.ignored_self_collision_links.end()) {
+        attachment.ignored_self_collision_links.push_back(attachment.link_name);
+    }
+    for (const auto &link : attachment.ignored_self_collision_links) {
+        if (linkIndex(link) < 0)
+            throw std::invalid_argument(
+                "RobotModel attachment ignored self-collision link not found: " +
+                link);
+    }
+    for (const auto &sphere : attachment.spheres) {
+        if (sphere.radius <= 0.0)
+            throw std::invalid_argument(
+                "RobotModel attachment spheres require positive radii");
+    }
+    attachment_ = std::move(attachment);
+    ++attachment_revision_;
+}
+
+void RobotModel::clearAttachment() {
+    if (attachment_.has_value()) {
+        attachment_.reset();
+        ++attachment_revision_;
+    }
+}
+
 bool RobotModel::isSelfCollisionDisabled(const std::string &link_a,
                                           const std::string &link_b) const {
+    if (attachment_.has_value()) {
+        const auto &attachment = *attachment_;
+        const auto ignores_touch_link =
+            [&](const std::string &maybe_attachment,
+                const std::string &other) {
+                return maybe_attachment == attachment.link_name &&
+                       std::find(
+                           attachment.ignored_self_collision_links.begin(),
+                           attachment.ignored_self_collision_links.end(),
+                           other) !=
+                           attachment.ignored_self_collision_links.end();
+            };
+        if (ignores_touch_link(link_a, link_b) ||
+            ignores_touch_link(link_b, link_a)) {
+            return true;
+        }
+    }
     std::string l1 = link_a, l2 = link_b;
     if (l1 > l2) std::swap(l1, l2);
     return disabled_collisions_.count({l1, l2}) > 0;
@@ -381,6 +434,35 @@ std::vector<CollisionSphere> RobotModel::getCollisionSpheres(
             ws.link_index = local_sphere.link_index;
             world_spheres.push_back(ws);
         }
+    }
+    if (attachment_.has_value()) {
+        const auto attached = getAttachmentCollisionSpheres(config);
+        world_spheres.insert(world_spheres.end(), attached.begin(), attached.end());
+    }
+    return world_spheres;
+}
+
+std::vector<CollisionSphere> RobotModel::getAttachmentCollisionSpheres(
+    const std::vector<double> &config) const {
+    std::vector<CollisionSphere> world_spheres;
+    if (!attachment_.has_value())
+        return world_spheres;
+
+    const int link_index = linkIndex(attachment_->link_name);
+    if (link_index < 0)
+        return world_spheres;
+
+    const auto transforms = getLinkTransforms(config);
+    const Eigen::Affine3d world_from_attachment =
+        transforms[static_cast<std::size_t>(link_index)] *
+        attachment_->link_from_attachment;
+    world_spheres.reserve(attachment_->spheres.size());
+    for (const auto &local_sphere : attachment_->spheres) {
+        CollisionSphere ws;
+        ws.center = world_from_attachment * local_sphere.center;
+        ws.radius = local_sphere.radius;
+        ws.link_index = link_index;
+        world_spheres.push_back(ws);
     }
     return world_spheres;
 }

@@ -717,6 +717,7 @@ struct GeomPrim {
 };
 
 struct RobotPrimCache {
+    std::size_t attachment_revision = 0;
     std::vector<GeomPrim> prims;
 };
 
@@ -753,6 +754,22 @@ static std::vector<GeomPrim> buildPrimsForRobot(const RobotModel &robot) {
             g.tf_link = Transform3::Identity();
             g.link_index = link.index;
             prims.push_back(std::move(g));
+        }
+    }
+    if (robot.hasAttachment()) {
+        const auto &attachment = *robot.attachment();
+        const int link_index = robot.linkIndex(attachment.link_name);
+        if (link_index >= 0) {
+            for (const auto &sphere : attachment.spheres) {
+                GeomPrim g;
+                g.geom = std::make_shared<fcl::Sphere<S>>(sphere.radius);
+                const Eigen::Vector3d local_center =
+                    attachment.link_from_attachment * sphere.center;
+                g.tf_link = Transform3(fcl::Translation3<S>(
+                    Vector3(local_center.x(), local_center.y(), local_center.z())));
+                g.link_index = link_index;
+                prims.push_back(std::move(g));
+            }
         }
     }
     return prims;
@@ -828,11 +845,14 @@ public:
     const RobotPrimCache &robotCache(const RobotModel &robot) const {
         const RobotModel *key = &robot;
         auto it = robot_cache_.find(key);
-        if (it != robot_cache_.end())
+        if (it != robot_cache_.end() &&
+            it->second.attachment_revision == robot.attachmentRevision()) {
             return it->second;
+        }
         RobotPrimCache entry;
+        entry.attachment_revision = robot.attachmentRevision();
         entry.prims = buildPrimsForRobot(robot);
-        auto ins = robot_cache_.emplace(key, std::move(entry));
+        auto ins = robot_cache_.insert_or_assign(key, std::move(entry));
         return ins.first->second;
     }
 

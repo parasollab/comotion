@@ -222,6 +222,21 @@ bool appendVampCylinderObstacle(vamp::collision::Environment<float> &environment
     return true;
 }
 
+void appendVampAttachment(vamp::collision::Environment<float> &environment,
+                          const AttachedBody &attachment) {
+    Eigen::Isometry3f tf = Eigen::Isometry3f::Identity();
+    tf.linear() = attachment.link_from_attachment.linear().cast<float>();
+    tf.translation() =
+        attachment.link_from_attachment.translation().cast<float>();
+    environment.attachments.emplace(tf);
+    environment.attachments->spheres.reserve(attachment.spheres.size());
+    for (const auto &sphere : attachment.spheres) {
+        environment.attachments->spheres.emplace_back(
+            vamp::collision::factory::sphere::eigen(
+                sphere.center.cast<float>(), static_cast<float>(sphere.radius)));
+    }
+}
+
 template <typename Environment>
 std::shared_ptr<Environment> buildVampEnvironment(const RobotModel &robot,
                                                   const CollisionChecker &cc) {
@@ -241,6 +256,8 @@ std::shared_ptr<Environment> buildVampEnvironment(const RobotModel &robot,
         appendVampCylinderObstacle(env_float, cc.cylinders()[i],
                                    robot_from_world, i);
     }
+    if (robot.hasAttachment())
+        appendVampAttachment(env_float, *robot.attachment());
     env_float.sort();
     return std::make_shared<Environment>(env_float);
 }
@@ -368,7 +385,8 @@ MultiRobotProblem::createSpaceInfo(int robot_idx) const {
         computeBoundsForRobot(robot_inst, robot_idx, cspace_bounds_override_);
 
 #if COMOTION_HAVE_VAMP
-    if (cc_.backend() == CollisionChecker::Backend::Vamp) {
+    if (cc_.backend() == CollisionChecker::Backend::Vamp &&
+        !robot->hasAttachment()) {
         switch (robot->robotFamily()) {
         case RobotModel::RobotFamily::Sphere:
             configureVampSphereRobot(*robot, bounds);

@@ -21,6 +21,7 @@
 #include "comotion/planning/STCBS.h"
 #include "comotion/planning/USTRRTstar.h"
 #include "comotion/robot/FlyingSphere.h"
+#include "comotion/robot/GraspPlanner.h"
 #include "comotion/robot/IKSolver.h"
 #include "comotion/robot/RobotModel.h"
 

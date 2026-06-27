@@ -235,6 +235,108 @@ void ensureCompatibleSphereRobots(const RobotModel &robot_a,
     configureSphereRobot(robot_a);
 }
 
+bool collisionSpheresCollide(const CollisionSphere &a,
+                             const CollisionSphere &b) {
+    const double radii = a.radius + b.radius;
+    return (a.center - b.center).squaredNorm() < radii * radii;
+}
+
+bool collisionSphereCylinderCollide(const CollisionSphere &sphere,
+                                    const ObstacleCylinder &cylinder) {
+    const Eigen::Vector3d axis = cylinder.axis.normalized();
+    const Eigen::Vector3d v = sphere.center - cylinder.center;
+    const double t = v.dot(axis);
+    const double radial_dist = (v - t * axis).norm();
+    const double axial_excess = std::max(0.0, std::abs(t) - cylinder.half_height);
+    const double radial_excess = std::max(0.0, radial_dist - cylinder.radius);
+    const double dist_sq =
+        axial_excess * axial_excess + radial_excess * radial_excess;
+    return dist_sq < sphere.radius * sphere.radius;
+}
+
+bool isValidSingleGeneric(const RobotModel &robot,
+                          const std::vector<double> &config,
+                          const std::vector<ObstacleSphere> &obstacles,
+                          const std::vector<ObstacleCylinder> &cylinders) {
+    const auto spheres = robot.getCollisionSpheres(config);
+    for (const auto &sphere : spheres) {
+        for (const auto &obstacle : obstacles) {
+            CollisionSphere obstacle_sphere;
+            obstacle_sphere.center = obstacle.center;
+            obstacle_sphere.radius = obstacle.radius;
+            obstacle_sphere.link_index = -1;
+            if (collisionSpheresCollide(sphere, obstacle_sphere))
+                return false;
+        }
+        for (const auto &cylinder : cylinders) {
+            if (collisionSphereCylinderCollide(sphere, cylinder))
+                return false;
+        }
+    }
+    return true;
+}
+
+bool isSelfCollisionFreeGeneric(const RobotModel &robot,
+                                const std::vector<double> &config) {
+    const auto spheres = robot.getCollisionSpheres(config);
+    for (std::size_t i = 0; i < spheres.size(); ++i) {
+        for (std::size_t j = i + 1; j < spheres.size(); ++j) {
+            if (spheres[i].link_index == spheres[j].link_index)
+                continue;
+            if (spheres[i].link_index < 0 || spheres[j].link_index < 0)
+                continue;
+            const auto &li =
+                robot.links()[static_cast<std::size_t>(spheres[i].link_index)];
+            const auto &lj =
+                robot.links()[static_cast<std::size_t>(spheres[j].link_index)];
+            if (robot.isSelfCollisionDisabled(li.name, lj.name))
+                continue;
+            if (collisionSpheresCollide(spheres[i], spheres[j]))
+                return false;
+        }
+    }
+    return true;
+}
+
+bool isMotionValidGeneric(const RobotModel &robot,
+                          const std::vector<double> &from,
+                          const std::vector<double> &to,
+                          int num_checks,
+                          const std::vector<ObstacleSphere> &obstacles,
+                          const std::vector<ObstacleCylinder> &cylinders) {
+    const int steps = std::max(1, num_checks);
+    const int dim = static_cast<int>(from.size());
+    std::vector<double> interp(static_cast<std::size_t>(dim));
+    for (int step = 0; step <= steps; ++step) {
+        const double t = static_cast<double>(step) / static_cast<double>(steps);
+        for (int d = 0; d < dim; ++d)
+            interp[static_cast<std::size_t>(d)] =
+                from[static_cast<std::size_t>(d)] +
+                t * (to[static_cast<std::size_t>(d)] -
+                     from[static_cast<std::size_t>(d)]);
+        if (!isValidSingleGeneric(robot, interp, obstacles, cylinders) ||
+            !isSelfCollisionFreeGeneric(robot, interp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool areGenericRobotSpheresPairValid(const RobotModel &robot_a,
+                                     const std::vector<double> &config_a,
+                                     const RobotModel &robot_b,
+                                     const std::vector<double> &config_b) {
+    const auto spheres_a = robot_a.getCollisionSpheres(config_a);
+    const auto spheres_b = robot_b.getCollisionSpheres(config_b);
+    for (const auto &sa : spheres_a) {
+        for (const auto &sb : spheres_b) {
+            if (collisionSpheresCollide(sa, sb))
+                return false;
+        }
+    }
+    return true;
+}
+
 bool appendCylinderObstacle(EnvironmentFloat &environment,
                             const ObstacleCylinder &cylinder,
                             const Eigen::Affine3f &robot_from_world,
@@ -262,6 +364,21 @@ bool appendCylinderObstacle(EnvironmentFloat &environment,
     obstacle.name = "obstacle_cylinder_" + std::to_string(index);
     environment.cylinders.emplace_back(obstacle);
     return true;
+}
+
+void appendAttachment(EnvironmentFloat &environment,
+                      const AttachedBody &attachment) {
+    Eigen::Isometry3f tf = Eigen::Isometry3f::Identity();
+    tf.linear() = attachment.link_from_attachment.linear().cast<float>();
+    tf.translation() =
+        attachment.link_from_attachment.translation().cast<float>();
+    environment.attachments.emplace(tf);
+    environment.attachments->spheres.reserve(attachment.spheres.size());
+    for (const auto &sphere : attachment.spheres) {
+        environment.attachments->spheres.emplace_back(
+            vamp::collision::factory::sphere::eigen(
+                sphere.center.cast<float>(), static_cast<float>(sphere.radius)));
+    }
 }
 
 template <typename Robot>
@@ -423,6 +540,18 @@ std::optional<std::size_t> firstCollidingLane(
     const RobotModel &robot_b,
     const std::array<const std::vector<double> *, kRake> &configs_b,
     std::size_t lanes) {
+    if (robot_a.hasAttachment() || robot_b.hasAttachment()) {
+        for (std::size_t lane = 0; lane < lanes; ++lane) {
+            if (!configs_a[lane] || !configs_b[lane])
+                continue;
+            if (!areGenericRobotSpheresPairValid(
+                    robot_a, *configs_a[lane], robot_b, *configs_b[lane])) {
+                return lane;
+            }
+        }
+        return std::nullopt;
+    }
+
     typename RobotA::template Spheres<kRake> spheres_a;
     typename RobotB::template Spheres<kRake> spheres_b;
 
@@ -461,6 +590,21 @@ std::optional<std::size_t> earliestCollidingTimestepInPack(
     const RobotModel &robot_b,
     const std::array<const std::vector<double> *, kRake> &configs_b,
     const BatchPack &pack) {
+    if (robot_a.hasAttachment() || robot_b.hasAttachment()) {
+        std::optional<std::size_t> earliest;
+        for (std::size_t lane = 0; lane < pack.lanes; ++lane) {
+            if (!configs_a[lane] || !configs_b[lane])
+                continue;
+            if (areGenericRobotSpheresPairValid(
+                    robot_a, *configs_a[lane], robot_b, *configs_b[lane])) {
+                continue;
+            }
+            const std::size_t timestep = pack.timesteps[lane];
+            earliest = earliest ? std::min(*earliest, timestep) : timestep;
+        }
+        return earliest;
+    }
+
     typename RobotA::template Spheres<kRake> spheres_a;
     typename RobotB::template Spheres<kRake> spheres_b;
 
@@ -516,11 +660,61 @@ PackedRobotSpheres buildPackedRobotSpheresForPack(const RobotModel &robot,
     return packed;
 }
 
+PackedRobotSpheres buildGenericRobotSpheresForPack(const RobotModel &robot,
+                                                   const Path &path,
+                                                   const BatchPack &pack) {
+    PackedRobotSpheres packed;
+    if (path.empty() || pack.lanes == 0)
+        return packed;
+
+    std::vector<std::vector<CollisionSphere>> lane_spheres(pack.lanes);
+    std::size_t sphere_count = 0;
+    for (std::size_t lane = 0; lane < pack.lanes; ++lane) {
+        lane_spheres[lane] =
+            robot.getCollisionSpheres(configAt(path, pack.timesteps[lane]));
+        sphere_count = std::max(sphere_count, lane_spheres[lane].size());
+    }
+
+    packed.spheres.reserve(sphere_count);
+    for (std::size_t sphere_index = 0; sphere_index < sphere_count;
+         ++sphere_index) {
+        std::array<float, kRake> xs{};
+        std::array<float, kRake> ys{};
+        std::array<float, kRake> zs{};
+        std::array<float, kRake> rs{};
+        for (std::size_t lane = 0; lane < kRake; ++lane) {
+            const std::size_t source_lane = lane < pack.lanes ? lane : 0;
+            const auto &spheres = lane_spheres[source_lane];
+            if (sphere_index < spheres.size()) {
+                const auto &sphere = spheres[sphere_index];
+                xs[lane] = static_cast<float>(sphere.center.x());
+                ys[lane] = static_cast<float>(sphere.center.y());
+                zs[lane] = static_cast<float>(sphere.center.z());
+                rs[lane] = static_cast<float>(sphere.radius);
+            } else {
+                xs[lane] = 0.0f;
+                ys[lane] = 0.0f;
+                zs[lane] = 0.0f;
+                rs[lane] = -1.0f;
+            }
+        }
+        packed.spheres.push_back(PackedSphereBlock{
+            vamp::FloatVector<kRake>(xs),
+            vamp::FloatVector<kRake>(ys),
+            vamp::FloatVector<kRake>(zs),
+            vamp::FloatVector<kRake>(rs)});
+    }
+    return packed;
+}
+
 PackedRobotSpheres buildPackedRobotSpheresForPack(const RobotModel &robot,
                                                   const Path &path,
                                                   const BatchPack &pack) {
     if (path.empty() || pack.lanes == 0)
         return {};
+
+    if (robot.hasAttachment())
+        return buildGenericRobotSpheresForPack(robot, path, pack);
 
     switch (robot.robotFamily()) {
     case RobotModel::RobotFamily::Sphere:
@@ -677,7 +871,9 @@ bool isStateBlockValid(const RobotModel &robot,
     if (lanes == 0)
         return true;
     auto block = makeConfigurationBlock<Robot>(configs, lanes);
-    return Robot::template fkcc<kRake>(environment, block);
+    return environment.attachments
+        ? Robot::template fkcc_attach<kRake>(environment, block)
+        : Robot::template fkcc<kRake>(environment, block);
 }
 
 template <typename Robot>
@@ -856,6 +1052,7 @@ GoalHoldConstraint computeGoalHoldConstraintRaked(
 
 struct SphereEnvironmentCache {
     std::size_t revision = 0;
+    std::size_t attachment_revision = 0;
     std::array<float, 16> base_transform{};
     bool valid = false;
     EnvironmentFloat env_float;
@@ -912,6 +1109,10 @@ public:
                        const std::vector<double> &config,
                        const std::vector<ObstacleSphere> &,
                        const std::vector<ObstacleCylinder> &) const override {
+        if (robot.hasAttachment()) {
+            return isValidSingleGeneric(robot, config, world_spheres_,
+                                        world_cylinders_);
+        }
         switch (robot.robotFamily()) {
         case RobotModel::RobotFamily::Sphere:
             return isValidSingleImpl<vamp::robots::Sphere>(
@@ -934,6 +1135,8 @@ public:
     bool isSelfCollisionFree(
         const RobotModel &robot,
         const std::vector<double> &config) const override {
+        if (robot.hasAttachment())
+            return isSelfCollisionFreeGeneric(robot, config);
         switch (robot.robotFamily()) {
         case RobotModel::RobotFamily::Sphere:
             return isSelfCollisionFreeImpl<vamp::robots::Sphere>(robot, config);
@@ -962,9 +1165,13 @@ public:
 
     bool isMotionValid(const RobotModel &robot,
                        const std::vector<double> &from,
-                       const std::vector<double> &to, int,
+                       const std::vector<double> &to, int num_checks,
                        const std::vector<ObstacleSphere> &,
                        const std::vector<ObstacleCylinder> &) const override {
+        if (robot.hasAttachment()) {
+            return isMotionValidGeneric(robot, from, to, num_checks,
+                                        world_spheres_, world_cylinders_);
+        }
         switch (robot.robotFamily()) {
         case RobotModel::RobotFamily::Sphere:
             return isMotionValidImpl<vamp::robots::Sphere>(
@@ -987,6 +1194,16 @@ public:
     bool isRobotPathValid(const RobotModel &robot, const Path &path,
                           const std::vector<ObstacleSphere> &,
                           const std::vector<ObstacleCylinder> &) const override {
+        if (robot.hasAttachment()) {
+            for (const auto &config : path) {
+                if (!isValidSingleGeneric(robot, config, world_spheres_,
+                                          world_cylinders_) ||
+                    !isSelfCollisionFreeGeneric(robot, config)) {
+                    return false;
+                }
+            }
+            return true;
+        }
         switch (robot.robotFamily()) {
         case RobotModel::RobotFamily::Sphere:
             return isRobotPathValidImpl<vamp::robots::Sphere>(
@@ -2929,6 +3146,13 @@ private:
 
     bool isRobotBatchValid(const RobotModel &robot, const Path &path,
                            const std::vector<BatchPack> &packs) const {
+        if (robot.hasAttachment()) {
+            for (const auto &pack : packs) {
+                if (!isRobotPackValid(robot, path, pack))
+                    return false;
+            }
+            return true;
+        }
         switch (robot.robotFamily()) {
         case RobotModel::RobotFamily::Sphere:
             return isRobotBatchValidImpl<vamp::robots::Sphere>(
@@ -2950,6 +3174,19 @@ private:
 
     bool isRobotPackValid(const RobotModel &robot, const Path &path,
                           const BatchPack &pack) const {
+        if (robot.hasAttachment()) {
+            if (path.empty() || pack.lanes == 0)
+                return true;
+            for (std::size_t lane = 0; lane < pack.lanes; ++lane) {
+                const auto &config = configAt(path, pack.timesteps[lane]);
+                if (!isValidSingleGeneric(robot, config, world_spheres_,
+                                          world_cylinders_) ||
+                    !isSelfCollisionFreeGeneric(robot, config)) {
+                    return false;
+                }
+            }
+            return true;
+        }
         switch (robot.robotFamily()) {
         case RobotModel::RobotFamily::Sphere:
             return isRobotPackValidImpl<vamp::robots::Sphere>(
@@ -3167,9 +3404,11 @@ private:
         auto key = baseTransformKey(robot);
         auto &cache = sphere_env_cache_[&robot];
         const bool cache_hit = cache.valid && cache.revision == environment_revision_ &&
+                               cache.attachment_revision == robot.attachmentRevision() &&
                                cache.base_transform == key;
         if (!cache_hit) {
             cache.revision = environment_revision_;
+            cache.attachment_revision = robot.attachmentRevision();
             cache.base_transform = key;
             cache.env_float = buildEnvironmentForRobot(robot);
             cache.env_float.sort();
@@ -3196,6 +3435,8 @@ private:
             appendCylinderObstacle(environment, world_cylinders_[i],
                                    robot_from_world, i);
         }
+        if (robot.hasAttachment())
+            appendAttachment(environment, *robot.attachment());
         return environment;
     }
 

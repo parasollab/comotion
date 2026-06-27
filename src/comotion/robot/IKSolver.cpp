@@ -6,25 +6,68 @@ namespace comotion {
 
 IKSolver::IKSolver(const RobotModel &robot) : robot_(robot) {}
 
-Eigen::Vector3d IKSolver::eePosition(const std::vector<double> &config,
-                                      int ee_link_idx) const {
+Eigen::Affine3d IKSolver::eePose(const std::vector<double> &config,
+                                  int ee_link_idx) const {
     auto transforms = robot_.getLinkTransforms(config);
-    return transforms[ee_link_idx].translation();
+    return transforms[ee_link_idx];
 }
 
-Eigen::MatrixXd IKSolver::positionJacobian(const std::vector<double> &config,
-                                            int ee_link_idx,
-                                            double eps) const {
+namespace {
+
+Eigen::Vector3d orientationError(const Eigen::Quaterniond &target,
+                                 const Eigen::Quaterniond &current) {
+    Eigen::Quaterniond delta = target.normalized() * current.normalized().inverse();
+    if (delta.w() < 0.0)
+        delta.coeffs() *= -1.0;
+    Eigen::AngleAxisd angle_axis(delta);
+    return angle_axis.axis() * angle_axis.angle();
+}
+
+} // namespace
+
+Eigen::VectorXd IKSolver::poseError(const std::vector<double> &config,
+                                    int ee_link_idx,
+                                    const IKRequest &req,
+                                    double *position_residual,
+                                    double *orientation_residual) const {
+    const auto pose = eePose(config, ee_link_idx);
+    const Eigen::Vector3d position_error =
+        req.target_position - pose.translation();
+
+    const bool with_orientation = req.target_orientation.has_value();
+    Eigen::VectorXd error(with_orientation ? 6 : 3);
+    error.head<3>() = position_error;
+
+    double orientation_norm = 0.0;
+    if (with_orientation) {
+        const Eigen::Quaterniond current(pose.linear());
+        const Eigen::Vector3d raw_orientation_error =
+            orientationError(*req.target_orientation, current);
+        orientation_norm = raw_orientation_error.norm();
+        error.tail<3>() = req.orientation_weight * raw_orientation_error;
+    }
+
+    if (position_residual)
+        *position_residual = position_error.norm();
+    if (orientation_residual)
+        *orientation_residual = orientation_norm;
+    return error;
+}
+
+Eigen::MatrixXd IKSolver::errorJacobian(const std::vector<double> &config,
+                                        int ee_link_idx,
+                                        const IKRequest &req,
+                                        const Eigen::VectorXd &error,
+                                        double eps) const {
     int n = robot_.numJoints();
-    Eigen::MatrixXd J(3, n);
-    Eigen::Vector3d p0 = eePosition(config, ee_link_idx);
+    Eigen::MatrixXd J(error.size(), n);
 
     std::vector<double> perturbed = config;
     for (int i = 0; i < n; ++i) {
         double orig = perturbed[i];
         perturbed[i] = orig + eps;
-        Eigen::Vector3d p1 = eePosition(perturbed, ee_link_idx);
-        J.col(i) = (p1 - p0) / eps;
+        Eigen::VectorXd e1 = poseError(perturbed, ee_link_idx, req);
+        J.col(i) = (e1 - error) / eps;
         perturbed[i] = orig;
     }
     return J;
@@ -58,25 +101,32 @@ IKResult IKSolver::solve(const IKRequest &req) const {
     clampToLimits(q);
 
     for (int iter = 0; iter < req.max_iterations; ++iter) {
-        Eigen::Vector3d p = eePosition(q, ee_idx);
-        Eigen::Vector3d err = req.target_position - p;
+        double position_residual = 0.0;
+        double orientation_residual = 0.0;
+        Eigen::VectorXd err =
+            poseError(q, ee_idx, req, &position_residual,
+                      &orientation_residual);
         double residual = err.norm();
 
-        if (residual < req.position_tolerance) {
+        if (position_residual < req.position_tolerance &&
+            (!req.target_orientation.has_value() ||
+             orientation_residual < req.orientation_tolerance)) {
             IKResult res;
             res.success = true;
             res.config = q;
             res.residual = residual;
+            res.position_residual = position_residual;
+            res.orientation_residual = orientation_residual;
             return res;
         }
 
-        Eigen::MatrixXd J = positionJacobian(q, ee_idx);
+        Eigen::MatrixXd J = errorJacobian(q, ee_idx, req, err);
 
-        // Damped least-squares: dq = J^T (J J^T + λ²I)^{-1} e
-        Eigen::Matrix3d JJt = J * J.transpose();
+        // Damped least-squares in error space: e(q + dq) ≈ e(q) + J dq.
+        Eigen::MatrixXd JJt = J * J.transpose();
         JJt.diagonal().array() += req.damping * req.damping;
-        Eigen::Vector3d v = JJt.ldlt().solve(err);
-        Eigen::VectorXd dq = J.transpose() * v;
+        Eigen::VectorXd v = JJt.ldlt().solve(err);
+        Eigen::VectorXd dq = -J.transpose() * v;
 
         for (int i = 0; i < n; ++i)
             q[i] += req.step_scale * dq(i);
@@ -84,11 +134,16 @@ IKResult IKSolver::solve(const IKRequest &req) const {
     }
 
     // Did not converge — return best effort
-    Eigen::Vector3d p = eePosition(q, ee_idx);
+    double position_residual = 0.0;
+    double orientation_residual = 0.0;
+    Eigen::VectorXd err =
+        poseError(q, ee_idx, req, &position_residual, &orientation_residual);
     IKResult res;
     res.success = false;
     res.config = q;
-    res.residual = (req.target_position - p).norm();
+    res.residual = err.norm();
+    res.position_residual = position_residual;
+    res.orientation_residual = orientation_residual;
     return res;
 }
 

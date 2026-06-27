@@ -1,6 +1,8 @@
 #pragma once
 
 #include <Eigen/Geometry>
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 #include <map>
@@ -33,6 +35,19 @@ struct CollisionMesh {
     Eigen::Affine3d origin = Eigen::Affine3d::Identity();
     std::string resolved_path;
     Eigen::Vector3d scale = Eigen::Vector3d::Ones();
+};
+
+struct AttachmentSphere {
+    Eigen::Vector3d center = Eigen::Vector3d::Zero();
+    double radius = 0.0;
+};
+
+struct AttachedBody {
+    std::string name;
+    std::string link_name;
+    Eigen::Affine3d link_from_attachment = Eigen::Affine3d::Identity();
+    std::vector<AttachmentSphere> spheres;
+    std::vector<std::string> ignored_self_collision_links;
 };
 
 struct JointInfo {
@@ -93,6 +108,15 @@ public:
 
     int linkIndex(const std::string &name) const;
 
+    void setAttachment(AttachedBody attachment);
+    void clearAttachment();
+    bool hasAttachment() const { return attachment_.has_value(); }
+    const std::optional<AttachedBody> &attachment() const { return attachment_; }
+    std::size_t attachmentRevision() const { return attachment_revision_; }
+
+    std::vector<CollisionSphere> getAttachmentCollisionSpheres(
+        const std::vector<double> &config) const;
+
 protected:
     static Eigen::Affine3d parseOrigin(const std::string &xyz_str,
                                         const std::string &rpy_str);
@@ -111,6 +135,8 @@ protected:
     std::vector<std::pair<int, int>> link_parent_chain_;
 
     std::set<std::pair<std::string, std::string>> disabled_collisions_;
+    std::optional<AttachedBody> attachment_;
+    std::size_t attachment_revision_ = 0;
 };
 
 } // namespace comotion

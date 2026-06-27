@@ -94,6 +94,12 @@ if(COMOTION_BUILD_TESTS)
     set_tests_properties(fcl_urdf_geometry_regression PROPERTIES
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 
+    add_executable(attachment_support_regression
+        tests/attachment_support_regression.cpp)
+    target_link_libraries(attachment_support_regression PRIVATE comotion)
+    add_test(NAME attachment_support_regression
+             COMMAND attachment_support_regression)
+
     add_executable(path_timestep_semantics
         tests/path_timestep_semantics.cpp)
     target_link_libraries(path_timestep_semantics PRIVATE comotion)
