@@ -1,13 +1,18 @@
 #include "comotion/collision/ConflictChecker.h"
 #include "comotion/robot/FlyingSphere.h"
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace {
+
+namespace fs = std::filesystem;
 
 bool expectTrue(const char *label, bool condition) {
     if (!condition) {
@@ -578,6 +583,218 @@ bool testSegmentParallelFindConflictsMatchesSequential() {
                       sameConflicts(first_eight, second_eight));
 }
 
+bool testFclSegmentParallelFindConflictsMatchesSequential() {
+    constexpr std::size_t kLength = 32;
+    std::vector<std::shared_ptr<comotion::RobotModel>> robots;
+    for (int i = 0; i < 8; ++i)
+        robots.push_back(makeSphereRobot());
+
+    std::vector<comotion::Path> paths;
+    for (int i = 0; i < 8; ++i) {
+        paths.push_back(makeConstantPath(
+            kLength, {100.0 * static_cast<double>(i), 0.0, 0.0}));
+    }
+
+    paths[1][5] = paths[0][5];
+    paths[3][5] = paths[2][5];
+    paths[5][8] = paths[4][8];
+    paths[7][9] = paths[6][9];
+
+    std::vector<const comotion::RobotModel *> ptrs;
+    ptrs.reserve(robots.size());
+    for (const auto &robot : robots)
+        ptrs.push_back(robot.get());
+
+    const auto expand = [](const comotion::Conflict &conflict) {
+        auto expanded = makeExpandedConflict(conflict);
+        if (conflict.robot_i == 0 && conflict.robot_j == 1)
+            expanded.robots = {0, 1, 4};
+        return expanded;
+    };
+
+    comotion::CompositePathValidationOptions sequential_options;
+    sequential_options.check_environment = false;
+    sequential_options.per_pair_t_begin.assign(
+        comotion::pairFrontierSize(paths.size()), 0);
+    sequential_options.per_pair_t_begin[comotion::pairFrontierIndex(
+        6, 7, paths.size())] = 7;
+
+    comotion::CollisionChecker collision_checker(
+        comotion::CollisionChecker::Backend::Fcl);
+    comotion::ConflictChecker checker(collision_checker);
+
+    const auto sequential_two = checker.findConflicts(
+        paths, ptrs, sequential_options, 0, 2, true, expand);
+    const auto sequential_four = checker.findConflicts(
+        paths, ptrs, sequential_options, 0, 4, true, expand);
+    const auto sequential_eight = checker.findConflicts(
+        paths, ptrs, sequential_options, 0, 8, true, expand);
+
+    for (const auto &[workers, horizon] :
+         std::vector<std::pair<std::size_t, std::size_t>>{
+             {2, 4}, {4, 16}, {8, 16}}) {
+        const auto *expected = &sequential_eight;
+        if (workers == 2)
+            expected = &sequential_two;
+        else if (workers == 4)
+            expected = &sequential_four;
+
+        for (const auto &[assignment, assignment_name] : assignmentModes()) {
+            comotion::CompositePathValidationOptions parallel_options =
+                sequential_options;
+            parallel_options.conflict_find_parallel_workers = workers;
+            parallel_options.conflict_find_parallel_horizon = horizon;
+            parallel_options.conflict_find_parallel_assignment = assignment;
+            std::vector<std::size_t> next_t_begin_by_pair;
+            const auto parallel_conflicts = checker.findConflicts(
+                paths, ptrs, parallel_options, 0, workers, true, expand, nullptr,
+                &next_t_begin_by_pair);
+            const std::string label =
+                "FCL segment-parallel " + std::string(assignment_name) +
+                " N=" + std::to_string(workers) + " matches sequential";
+            if (!expectTrue(label.c_str(),
+                            sameConflicts(*expected, parallel_conflicts))) {
+                return false;
+            }
+            if (!expectTrue("FCL segment-parallel next pair progress size",
+                            next_t_begin_by_pair.size() ==
+                                comotion::pairFrontierSize(paths.size()))) {
+                return false;
+            }
+            if (horizon > 8) {
+                if (!expectTrue(
+                        "FCL segment-parallel claimed pair does not advance past claim",
+                        next_t_begin_by_pair[comotion::pairFrontierIndex(
+                            4, 5, paths.size())] <= 5)) {
+                    return false;
+                }
+                if (!expectTrue(
+                        "FCL segment-parallel raw later conflict frontier is preserved",
+                        next_t_begin_by_pair[comotion::pairFrontierIndex(
+                            6, 7, paths.size())] <= 9)) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    const auto repeat_options = [&]() {
+        comotion::CompositePathValidationOptions options = sequential_options;
+        options.conflict_find_parallel_workers = 4;
+        options.conflict_find_parallel_horizon = 16;
+        return options;
+    }();
+    const auto first = checker.findConflicts(paths, ptrs, repeat_options, 0, 4,
+                                             true, expand);
+    const auto second = checker.findConflicts(paths, ptrs, repeat_options, 0, 4,
+                                              true, expand);
+    if (!expectTrue("FCL segment-parallel W=4 repeat runs are deterministic",
+                    sameConflicts(first, second))) {
+        return false;
+    }
+
+    comotion::CompositePathValidationOptions repeat_eight_options =
+        sequential_options;
+    repeat_eight_options.conflict_find_parallel_workers = 8;
+    repeat_eight_options.conflict_find_parallel_horizon = 16;
+    const auto first_eight = checker.findConflicts(
+        paths, ptrs, repeat_eight_options, 0, 8, true, expand);
+    const auto second_eight = checker.findConflicts(
+        paths, ptrs, repeat_eight_options, 0, 8, true, expand);
+    return expectTrue("FCL segment-parallel W=8 repeat runs are deterministic",
+                      sameConflicts(first_eight, second_eight));
+}
+
+void writeFclPrimitiveConflictUrdf(const fs::path &path) {
+    std::ofstream out(path);
+    if (!out)
+        throw std::runtime_error("cannot write " + path.string());
+    out << "<?xml version=\"1.0\"?>\n"
+        << "<robot name=\"fcl_parallel_box\">\n"
+        << "  <link name=\"base\"/>\n"
+        << "  <joint name=\"slide_x\" type=\"prismatic\">\n"
+        << "    <parent link=\"base\"/>\n"
+        << "    <child link=\"box_link\"/>\n"
+        << "    <origin xyz=\"0 0 0\" rpy=\"0 0 0\"/>\n"
+        << "    <axis xyz=\"1 0 0\"/>\n"
+        << "    <limit lower=\"-10\" upper=\"10\" velocity=\"1\"/>\n"
+        << "  </joint>\n"
+        << "  <link name=\"box_link\">\n"
+        << "    <collision>\n"
+        << "      <origin xyz=\"0 0 0\" rpy=\"0 0 0\"/>\n"
+        << "      <geometry><box size=\"1 1 1\"/></geometry>\n"
+        << "    </collision>\n"
+        << "  </link>\n"
+        << "</robot>\n";
+}
+
+bool testFclSegmentParallelPrimitiveGeometryMatchesSequential() {
+    const fs::path dir =
+        fs::temp_directory_path() / "comotion_fcl_parallel_conflict_regression";
+    fs::create_directories(dir);
+    const fs::path urdf = dir / "fcl_parallel_box.urdf";
+    writeFclPrimitiveConflictUrdf(urdf);
+
+    std::vector<std::shared_ptr<comotion::RobotModel>> robots;
+    for (int i = 0; i < 4; ++i) {
+        auto robot = std::make_shared<comotion::RobotModel>();
+        robot->loadURDF(urdf.string());
+        robots.push_back(std::move(robot));
+    }
+
+    constexpr std::size_t kLength = 20;
+    std::vector<comotion::Path> paths;
+    paths.push_back(makeConstantPath(kLength, {0.0}));
+    paths.push_back(makeConstantPath(kLength, {4.0}));
+    paths.push_back(makeConstantPath(kLength, {8.0}));
+    paths.push_back(makeConstantPath(kLength, {12.0}));
+    paths[1][6] = {0.35};
+    paths[3][9] = {8.35};
+
+    std::vector<const comotion::RobotModel *> ptrs;
+    ptrs.reserve(robots.size());
+    for (const auto &robot : robots)
+        ptrs.push_back(robot.get());
+
+    comotion::CompositePathValidationOptions sequential_options;
+    sequential_options.check_environment = false;
+
+    comotion::CollisionChecker collision_checker(
+        comotion::CollisionChecker::Backend::Fcl);
+    comotion::ConflictChecker checker(collision_checker);
+
+    const auto expected = checker.findConflicts(paths, ptrs, sequential_options,
+                                                0, 2, true);
+    if (!expectTrue("FCL primitive sequential conflict count",
+                    expected.size() == 2)) {
+        return false;
+    }
+
+    comotion::CompositePathValidationOptions parallel_options =
+        sequential_options;
+    parallel_options.conflict_find_parallel_workers = 2;
+    parallel_options.conflict_find_parallel_horizon = 8;
+    std::vector<std::size_t> next_t_begin_by_pair;
+    const auto parallel = checker.findConflicts(
+        paths, ptrs, parallel_options, 0, 2, true, {}, nullptr,
+        &next_t_begin_by_pair);
+    if (!expectTrue("FCL primitive parallel matches sequential",
+                    sameConflicts(expected, parallel))) {
+        return false;
+    }
+    if (!expectTrue("FCL primitive next pair progress size",
+                    next_t_begin_by_pair.size() ==
+                        comotion::pairFrontierSize(paths.size()))) {
+        return false;
+    }
+    return expectTrue(
+        "FCL primitive accepted pair frontiers stop at conflicts",
+        next_t_begin_by_pair[comotion::pairFrontierIndex(0, 1,
+                                                         paths.size())] <= 6 &&
+            next_t_begin_by_pair[comotion::pairFrontierIndex(2, 3,
+                                                             paths.size())] <= 9);
+}
+
 bool testVampSegmentParallelFindConflictsMatchesSequential() {
 #if COMOTION_HAVE_VAMP
     constexpr std::size_t kLength = 32;
@@ -698,6 +915,10 @@ int main() {
     if (!testFindConflictPairsPerPairProgressAndUniqueSkips())
         return 1;
     if (!testSegmentParallelFindConflictsMatchesSequential())
+        return 1;
+    if (!testFclSegmentParallelFindConflictsMatchesSequential())
+        return 1;
+    if (!testFclSegmentParallelPrimitiveGeometryMatchesSequential())
         return 1;
     if (!testVampSegmentParallelFindConflictsMatchesSequential())
         return 1;
