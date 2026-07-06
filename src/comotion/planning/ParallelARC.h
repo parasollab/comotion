@@ -44,6 +44,10 @@ public:
     void setConflictFindHorizon(std::size_t horizon) {
         conflict_find_horizon_ = horizon;
     }
+    void setConflictFindAssignment(
+        ConflictFindParallelAssignment assignment) {
+        conflict_find_assignment_ = assignment;
+    }
     void setRepairDuplicateAttempts(bool enabled) {
         repair_duplicate_attempts_ = enabled;
     }
@@ -117,6 +121,8 @@ private:
     ParallelArcConflictFindMode conflict_find_mode_ =
         ParallelArcConflictFindMode::SegmentParallel;
     std::size_t conflict_find_horizon_ = 400;
+    ConflictFindParallelAssignment conflict_find_assignment_ =
+        ConflictFindParallelAssignment::Auto;
     bool repair_duplicate_attempts_ = true;
     std::vector<ConflictRoundStats> conflict_round_stats_;
 };

@@ -56,18 +56,20 @@ struct TrialMetrics {
     json solution_summary = json::object();
 
     json toJson() const {
-        json compact_planner_stats = json::object();
-        if (solution_summary.is_object() &&
-            solution_summary.contains("solution_events")) {
-            compact_planner_stats["solution_events"] =
-                solution_summary["solution_events"];
-        }
-
         return json{
+            {"planner", planner},
+            {"collision_backend", collision_backend},
+            {"planner_status", planner_status},
             {"success", success},
             {"planning_time_seconds", planning_time_seconds},
+            {"solve_time_seconds", solve_time_seconds},
+            {"compute_time_seconds", compute_time_seconds},
+            {"validation_time_seconds", validation_time_seconds},
+            {"sum_of_cost_timesteps", sum_of_cost_timesteps},
             {"makespan_timesteps", makespan_timesteps},
-            {"planner_stats", compact_planner_stats},
+            {"planner_stats", planner_stats},
+            {"benchmark_context", benchmark_context},
+            {"solution_summary", solution_summary},
         };
     }
 };
@@ -172,6 +174,23 @@ inline bool parseBoolValue(const std::string &value) {
         return false;
     }
     throw std::runtime_error("Expected boolean value, got: " + value);
+}
+
+inline comotion::ConflictFindParallelAssignment
+parseParallelArcConflictFindAssignment(const std::string &value) {
+    const std::string lowered = lowerAscii(value);
+    if (lowered == "auto")
+        return comotion::ConflictFindParallelAssignment::Auto;
+    if (lowered == "pair_cover" || lowered == "pair-cover" ||
+        lowered == "pair_covering" || lowered == "pair-covering")
+        return comotion::ConflictFindParallelAssignment::PairCover;
+    if (lowered == "all_robots_round_robin" ||
+        lowered == "all-robots-round-robin" ||
+        lowered == "all_robots" || lowered == "all-robots" ||
+        lowered == "round_robin" || lowered == "round-robin")
+        return comotion::ConflictFindParallelAssignment::AllRobotsRoundRobin;
+    throw std::runtime_error(
+        "Unknown ParallelARC conflict-find assignment: " + value);
 }
 
 inline comotion::StrrtRewiring parseStrrtRewiring(const std::string &value) {
@@ -590,6 +609,9 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
             }
             planner->setConflictFindHorizon(
                 options.parallel_arc_conflict_find_horizon);
+            planner->setConflictFindAssignment(
+                parseParallelArcConflictFindAssignment(
+                    options.parallel_arc_conflict_find_assignment));
             return planner;
         };
         return blueprint;

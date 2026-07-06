@@ -171,14 +171,17 @@ bool validateCanonicalLightestAssignment(int n, int bucket_count,
 } // namespace
 
 int main() {
-    constexpr std::array<int, 7> cached_n = {{4, 8, 16, 32, 64, 128, 256}};
-    constexpr std::array<int, 4> cached_buckets = {{2, 4, 8, 16}};
+    constexpr auto cached_buckets = comotion::kParallelArcPaperWorkerCounts;
 
-    for (int n : cached_n) {
+    for (int n : comotion::kParallelArcPaperRobotCounts) {
         for (int bucket_count : cached_buckets) {
             if (!validateCover(n, bucket_count))
                 return 1;
         }
+    }
+    for (int bucket_count : cached_buckets) {
+        if (!validateCover(256, bucket_count))
+            return 1;
     }
 
     if (!validateCover(10, 8))

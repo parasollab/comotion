@@ -17,6 +17,7 @@ from benchmark_runner_common import (
     finish_outputs,
     parse_cases,
     parse_int_csv,
+    resolve_output_paths,
     run_trials,
     timestamp,
     variants_from_algorithms,
@@ -71,10 +72,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resolution", type=int, default=128)
     parser.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD_DIR)
     parser.add_argument(
+        "--keep-metrics-json",
+        action="store_true",
+        help="Keep each app's full per-trial metrics JSON under the output root.",
+    )
+    parser.add_argument(
         "--output-root",
         type=Path,
         default=None,
         help="Output directory. Default: benchmarks/results/feasibility_<UTC timestamp>.",
+    )
+    parser.add_argument(
+        "--results-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Main results CSV path. Default: <output-root>/results.csv. "
+            "Existing rows are kept and skipped unless --overwrite-results is set."
+        ),
+    )
+    parser.add_argument(
+        "--solution-events-csv",
+        type=Path,
+        default=None,
+        help="Solution-events CSV path. Default: sibling of --results-csv.",
+    )
+    parser.add_argument(
+        "--overwrite-results",
+        action="store_true",
+        help="Discard existing CSV rows and rerun requested trials.",
     )
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument(
@@ -89,7 +115,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    output_root = args.output_root or DEFAULT_RESULTS_DIR / f"feasibility_{timestamp()}"
+    output_root, result_csv_path, event_csv_path = resolve_output_paths(
+        output_root=args.output_root,
+        results_csv=args.results_csv,
+        solution_events_csv=args.solution_events_csv,
+        default_output_root=DEFAULT_RESULTS_DIR / f"feasibility_{timestamp()}",
+    )
     cases = parse_cases(args.cases, DEFAULT_FEASIBILITY_CASES)
     extra_args: dict[str, tuple[str, ...]] = {}
     if args.parallel_arc_initial_solution_or:
@@ -117,6 +148,8 @@ def main() -> int:
             print(" ".join(spec.command()))
         print(f"planned_trials: {len(specs)}")
         print(f"output_root: {output_root}")
+        print(f"results_csv: {result_csv_path}")
+        print(f"solution_events_csv: {event_csv_path}")
         return 0
 
     write_manifest(
@@ -132,15 +165,21 @@ def main() -> int:
         specs,
         jobs=args.jobs,
         timeout_seconds=args.time_limit + args.timeout_grace,
+        keep_metrics_json=args.keep_metrics_json,
+        result_csv_path=result_csv_path,
+        event_csv_path=event_csv_path,
+        skip_existing=not args.overwrite_results,
     )
     plots = finish_outputs(
         output_root=output_root,
+        result_csv_path=result_csv_path,
+        event_csv_path=event_csv_path,
         result_rows=rows,
         event_rows=event_rows,
         plot_kind="success",
     )
-    print(f"results_csv: {output_root / 'results.csv'}")
-    print(f"solution_events_csv: {output_root / 'solution_events.csv'}")
+    print(f"results_csv: {result_csv_path}")
+    print(f"solution_events_csv: {event_csv_path}")
     for plot in plots:
         print(f"plot: {plot}")
     return 0

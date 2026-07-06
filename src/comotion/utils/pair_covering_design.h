@@ -7,6 +7,15 @@
 #include <vector>
 
 namespace comotion {
+
+inline constexpr std::array<int, 6> kParallelArcPaperRobotCounts = {{
+    4, 8, 16, 32, 64, 128,
+}};
+
+inline constexpr std::array<int, 4> kParallelArcPaperWorkerCounts = {{
+    2, 4, 8, 16,
+}};
+
 namespace detail {
 
 inline constexpr std::array<std::uint16_t, 1> kPairCoverB2Cycle = {{
@@ -66,8 +75,10 @@ inline std::vector<std::vector<int>> materializeStarPairCover(int n,
 
 /// Returns buckets that cover every unordered pair of integers in [0, n).
 ///
-/// The requested powers-of-two table entries for n in {4, 8, ..., 256} and
-/// bucket counts 2, 4, 8, and 16 are represented by the fixed mask cycles above.
+/// The requested powers-of-two table entries for P-ARC paper team sizes
+/// n in {4, 8, 16, 32, 64, 128} and bucket counts 2, 4, 8, and 16 are
+/// represented by the fixed mask cycles above. The same cycles are valid for
+/// n = 256, which is kept as extra regression coverage.
 /// The cycles are validated heuristic covers rather than certified optima. Other
 /// positive inputs use the same deterministic cycles when available, or a valid
 /// star cover.

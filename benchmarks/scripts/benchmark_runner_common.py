@@ -8,6 +8,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,7 @@ else:
     DEFAULT_BUILD_DIR = REPO_ROOT / "build" / "apps"
     DEFAULT_RESULTS_DIR = REPO_ROOT / "benchmarks" / "results"
 _MPL_CACHE_DIR = None
+_CSV_WRITE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,24 @@ CASE_CATALOG: dict[str, BenchmarkCase] = {
         executable="mobile_robot_2d_crossing",
         base_args=("--scenario", "parallel", "--num-robots", "16"),
     ),
+    "mobile_parallel_n32": BenchmarkCase(
+        key="mobile_parallel_n32",
+        title="Mobile 2D parallel, 32 robots",
+        executable="mobile_robot_2d_crossing",
+        base_args=("--scenario", "parallel", "--num-robots", "32"),
+    ),
+    "mobile_parallel_n64": BenchmarkCase(
+        key="mobile_parallel_n64",
+        title="Mobile 2D parallel, 64 robots",
+        executable="mobile_robot_2d_crossing",
+        base_args=("--scenario", "parallel", "--num-robots", "64"),
+    ),
+    "mobile_parallel_n128": BenchmarkCase(
+        key="mobile_parallel_n128",
+        title="Mobile 2D parallel, 128 robots",
+        executable="mobile_robot_2d_crossing",
+        base_args=("--scenario", "parallel", "--num-robots", "128"),
+    ),
     "mobile_circle_n4": BenchmarkCase(
         key="mobile_circle_n4",
         title="Mobile 2D circle, 4 robots",
@@ -122,6 +142,12 @@ CASE_CATALOG: dict[str, BenchmarkCase] = {
         executable="mobile_robot_2d_crossing",
         base_args=("--scenario", "circle", "--num-robots", "8"),
     ),
+    "mobile_circle_n16": BenchmarkCase(
+        key="mobile_circle_n16",
+        title="Mobile 2D circle, 16 robots",
+        executable="mobile_robot_2d_crossing",
+        base_args=("--scenario", "circle", "--num-robots", "16"),
+    ),
     "planar_cross_n4": BenchmarkCase(
         key="planar_cross_n4",
         title="Planar manipulator cross, 4 robots",
@@ -133,6 +159,30 @@ CASE_CATALOG: dict[str, BenchmarkCase] = {
         title="Planar manipulator cross, 8 robots",
         executable="planar_manipulator_cross",
         base_args=("--scenario", "cross", "--num-robots", "8"),
+    ),
+    "planar_cross_n16": BenchmarkCase(
+        key="planar_cross_n16",
+        title="Planar manipulator cross, 16 robots",
+        executable="planar_manipulator_cross",
+        base_args=("--scenario", "cross", "--num-robots", "16"),
+    ),
+    "planar_cross_n32": BenchmarkCase(
+        key="planar_cross_n32",
+        title="Planar manipulator cross, 32 robots",
+        executable="planar_manipulator_cross",
+        base_args=("--scenario", "cross", "--num-robots", "32"),
+    ),
+    "planar_cross_n64": BenchmarkCase(
+        key="planar_cross_n64",
+        title="Planar manipulator cross, 64 robots",
+        executable="planar_manipulator_cross",
+        base_args=("--scenario", "cross", "--num-robots", "64"),
+    ),
+    "planar_cross_n128": BenchmarkCase(
+        key="planar_cross_n128",
+        title="Planar manipulator cross, 128 robots",
+        executable="planar_manipulator_cross",
+        base_args=("--scenario", "cross", "--num-robots", "128"),
     ),
     "planar_adaptive_n8": BenchmarkCase(
         key="planar_adaptive_n8",
@@ -154,6 +204,20 @@ CASE_CATALOG: dict[str, BenchmarkCase] = {
         base_args=("--num-robots", "4"),
         task_based=True,
     ),
+    "panda_cage_n8": BenchmarkCase(
+        key="panda_cage_n8",
+        title="Panda cage, 8 robots",
+        executable="panda_cage",
+        base_args=("--num-robots", "8"),
+        task_based=True,
+    ),
+    "panda_cage_n16": BenchmarkCase(
+        key="panda_cage_n16",
+        title="Panda cage, 16 robots",
+        executable="panda_cage",
+        base_args=("--num-robots", "16"),
+        task_based=True,
+    ),
     "panda_flat_n4": BenchmarkCase(
         key="panda_flat_n4",
         title="Panda flat, 4 robots",
@@ -166,6 +230,61 @@ CASE_CATALOG: dict[str, BenchmarkCase] = {
 DEFAULT_FEASIBILITY_CASES = ("mobile_parallel_n4", "planar_cross_n4", "panda_cage_n2")
 DEFAULT_ANYTIME_CASES = ("mobile_parallel_n4", "planar_cross_n4", "panda_cage_n2")
 DEFAULT_MULTICORE_CASES = ("mobile_parallel_n8", "planar_cross_n8")
+
+PAPER_MOBILE_PARALLEL_CASES = (
+    "mobile_parallel_n4",
+    "mobile_parallel_n8",
+    "mobile_parallel_n16",
+    "mobile_parallel_n32",
+    "mobile_parallel_n64",
+    "mobile_parallel_n128",
+)
+PAPER_MOBILE_CIRCLE_CASES = (
+    "mobile_circle_n4",
+    "mobile_circle_n8",
+    "mobile_circle_n16",
+)
+PAPER_PLANAR_CROSS_CASES = (
+    "planar_cross_n4",
+    "planar_cross_n8",
+    "planar_cross_n16",
+    "planar_cross_n32",
+    "planar_cross_n64",
+    "planar_cross_n128",
+)
+PAPER_2D_CASES = (
+    *PAPER_MOBILE_PARALLEL_CASES,
+    *PAPER_MOBILE_CIRCLE_CASES,
+    *PAPER_PLANAR_CROSS_CASES,
+)
+PAPER_PANDA_CAGE_CASES = (
+    "panda_cage_n4",
+    "panda_cage_n8",
+    "panda_cage_n16",
+)
+PAPER_PARALLEL_ARC_CASES = (
+    *PAPER_2D_CASES,
+    *PAPER_PANDA_CAGE_CASES,
+)
+PAPER_CONFLICT_ABLATION_CASES = (
+    "mobile_parallel_n64",
+    "planar_cross_n64",
+)
+
+CASE_GROUPS: dict[str, tuple[str, ...]] = {
+    "paper": PAPER_PARALLEL_ARC_CASES,
+    "paper_parallel_arc": PAPER_PARALLEL_ARC_CASES,
+    "paper_2d": PAPER_2D_CASES,
+    "paper_mobile": (*PAPER_MOBILE_PARALLEL_CASES, *PAPER_MOBILE_CIRCLE_CASES),
+    "paper_mobile_parallel": PAPER_MOBILE_PARALLEL_CASES,
+    "paper_mobile_cross": PAPER_MOBILE_PARALLEL_CASES,
+    "paper_mobile_circle": PAPER_MOBILE_CIRCLE_CASES,
+    "paper_planar": PAPER_PLANAR_CROSS_CASES,
+    "paper_planar_cross": PAPER_PLANAR_CROSS_CASES,
+    "paper_panda": PAPER_PANDA_CAGE_CASES,
+    "paper_panda_cage": PAPER_PANDA_CAGE_CASES,
+    "paper_conflict_ablation": PAPER_CONFLICT_ABLATION_CASES,
+}
 
 PLANNER_LABELS = {
     "arc": "ARC",
@@ -194,6 +313,10 @@ RESULT_COLUMNS = [
     "time_limit_seconds",
     "success",
     "first_solution_time_seconds",
+    "planning_time_seconds",
+    "makespan_timesteps",
+    "sum_of_cost_timesteps",
+    "metrics_json",
 ]
 
 EVENT_COLUMNS = [
@@ -230,6 +353,31 @@ def timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
+def resolve_output_paths(
+    *,
+    output_root: Path | None,
+    results_csv: Path | None,
+    solution_events_csv: Path | None,
+    default_output_root: Path,
+) -> tuple[Path, Path, Path]:
+    if output_root is None:
+        if results_csv is not None:
+            output_root = results_csv.parent
+        elif solution_events_csv is not None:
+            output_root = solution_events_csv.parent
+        else:
+            output_root = default_output_root
+
+    result_csv_path = results_csv or output_root / "results.csv"
+    event_csv_path = (
+        solution_events_csv
+        or (result_csv_path.with_name("solution_events.csv")
+            if results_csv is not None
+            else output_root / "solution_events.csv")
+    )
+    return output_root, result_csv_path, event_csv_path
+
+
 def parse_csv_tokens(value: str) -> list[str]:
     return [token.strip() for token in value.split(",") if token.strip()]
 
@@ -239,7 +387,15 @@ def parse_int_csv(value: str) -> list[int]:
 
 
 def parse_cases(value: str, default_keys: Sequence[str]) -> list[BenchmarkCase]:
-    keys = list(default_keys) if value == "default" else parse_csv_tokens(value)
+    raw_keys = list(default_keys) if value == "default" else parse_csv_tokens(value)
+    keys: list[str] = []
+    seen: set[str] = set()
+    for raw_key in raw_keys:
+        expanded = CASE_GROUPS.get(raw_key, (raw_key,))
+        for key in expanded:
+            if key not in seen:
+                keys.append(key)
+                seen.add(key)
     if not keys:
         raise RuntimeError("At least one benchmark case is required")
     cases: list[BenchmarkCase] = []
@@ -247,7 +403,9 @@ def parse_cases(value: str, default_keys: Sequence[str]) -> list[BenchmarkCase]:
         try:
             cases.append(CASE_CATALOG[key])
         except KeyError as exc:
-            available = ", ".join(sorted(CASE_CATALOG))
+            available = ", ".join(
+                [*sorted(CASE_CATALOG), *sorted(CASE_GROUPS)]
+            )
             raise RuntimeError(f"Unknown benchmark case '{key}'. Available: {available}") from exc
     return cases
 
@@ -302,6 +460,190 @@ def multicore_variants(
             )
         )
     return variants
+
+
+PAPER_PARALLEL_ARC_WORKER_COUNTS = (2, 4, 8, 16)
+PAPER_PARALLEL_ARC_TOTAL_WORKERS = 16
+PAPER_OR_PP_ST_RRT_WORKER_COUNTS = (16,)
+PAPER_OR_PARALLEL_SPLITS = ((2, 8), (4, 4), (8, 2))
+PAPER_CONFLICT_FIND_HORIZONS = (50, 100, 200, 400, 800, 1600, 3200)
+
+
+def paper_parallel_arc_variants(
+    *,
+    include_rrt_baselines: bool = False,
+    include_initial_solution_or: bool = True,
+    or_pp_strrt_worker_counts: Sequence[int] = PAPER_OR_PP_ST_RRT_WORKER_COUNTS,
+) -> list[PlannerVariant]:
+    initial_or_args = (
+        ("--parallel-arc-initial-solution-or",)
+        if include_initial_solution_or
+        else ()
+    )
+    variants: list[PlannerVariant] = [
+        PlannerVariant(label="ARC", algorithm="arc", slug="arc"),
+    ]
+    for workers in PAPER_PARALLEL_ARC_WORKER_COUNTS:
+        variants.append(
+            PlannerVariant(
+                label=f"P-ARC-{workers}",
+                algorithm="parallel_arc",
+                slug=f"p_arc_{workers}",
+                extra_args=(
+                    "--parallel-arc-worker-processes",
+                    str(workers),
+                    *initial_or_args,
+                ),
+            )
+        )
+
+    variants.append(
+        PlannerVariant(
+            label=f"OR-ARC-{PAPER_PARALLEL_ARC_TOTAL_WORKERS}",
+            algorithm="arc",
+            slug=f"or_arc_{PAPER_PARALLEL_ARC_TOTAL_WORKERS}",
+            extra_args=(
+                "--or-parallel-worker-processes",
+                str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
+            ),
+        )
+    )
+    for outer_workers, inner_workers in PAPER_OR_PARALLEL_SPLITS:
+        variants.append(
+            PlannerVariant(
+                label=f"OR-P-ARC-{outer_workers}x{inner_workers}",
+                algorithm="parallel_arc",
+                slug=f"or_p_arc_{outer_workers}x{inner_workers}",
+                extra_args=(
+                    "--or-parallel-worker-processes",
+                    str(outer_workers),
+                    "--parallel-arc-worker-processes",
+                    str(inner_workers),
+                    *initial_or_args,
+                ),
+            )
+        )
+
+    if include_rrt_baselines:
+        variants.extend(paper_parallel_rrt_baseline_variants())
+        variants.extend(
+            paper_or_pp_strrt_baseline_variants(or_pp_strrt_worker_counts)
+        )
+    return variants
+
+
+def paper_or_pp_strrt_baseline_variants(
+    worker_counts: Sequence[int] = PAPER_OR_PP_ST_RRT_WORKER_COUNTS,
+) -> list[PlannerVariant]:
+    variants: list[PlannerVariant] = []
+    for workers in worker_counts:
+        if workers < 1:
+            raise RuntimeError("OR-PP-ST-RRT worker counts must be positive")
+        variants.append(
+            PlannerVariant(
+                label=f"OR-PP-ST-RRT-{workers}",
+                algorithm="prioritized",
+                slug=f"or_pp_st_rrt_{workers}",
+                extra_args=(
+                    "--or-parallel-worker-processes",
+                    str(workers),
+                    "--strrt-shuffle-priority-order",
+                ),
+            )
+        )
+    return variants
+
+
+def paper_parallel_rrt_baseline_variants() -> list[PlannerVariant]:
+    variants: list[PlannerVariant] = [
+        PlannerVariant(
+            label="RRT-C",
+            algorithm="composite",
+            slug="rrt_c",
+        ),
+        PlannerVariant(
+            label=f"C-RRT-C-{PAPER_PARALLEL_ARC_TOTAL_WORKERS}",
+            algorithm="cooperative_composite",
+            slug=f"c_rrt_c_{PAPER_PARALLEL_ARC_TOTAL_WORKERS}",
+            extra_args=(
+                "--cooperative-rrt-worker-threads",
+                str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
+            ),
+        ),
+        PlannerVariant(
+            label=f"OR-RRT-C-{PAPER_PARALLEL_ARC_TOTAL_WORKERS}",
+            algorithm="composite",
+            slug=f"or_rrt_c_{PAPER_PARALLEL_ARC_TOTAL_WORKERS}",
+            extra_args=(
+                "--or-parallel-worker-processes",
+                str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
+            ),
+        ),
+    ]
+    for outer_workers, inner_workers in PAPER_OR_PARALLEL_SPLITS:
+        variants.append(
+            PlannerVariant(
+                label=f"OR-C-RRT-C-{outer_workers}x{inner_workers}",
+                algorithm="cooperative_composite",
+                slug=f"or_c_rrt_c_{outer_workers}x{inner_workers}",
+                extra_args=(
+                    "--or-parallel-worker-processes",
+                    str(outer_workers),
+                    "--cooperative-rrt-worker-threads",
+                    str(inner_workers),
+                ),
+            )
+        )
+    return variants
+
+
+def paper_conflict_horizon_variants() -> list[PlannerVariant]:
+    return [
+        PlannerVariant(
+            label=f"P-ARC-16-h{horizon}",
+            algorithm="parallel_arc",
+            slug=f"p_arc_16_h{horizon}",
+            extra_args=(
+                "--parallel-arc-worker-processes",
+                str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
+                "--parallel-arc-initial-solution-or",
+                "--parallel-arc-conflict-find-assignment",
+                "pair_cover",
+                "--parallel-arc-conflict-find-horizon",
+                str(horizon),
+            ),
+        )
+        for horizon in PAPER_CONFLICT_FIND_HORIZONS
+    ]
+
+
+def paper_conflict_assignment_variants() -> list[PlannerVariant]:
+    return [
+        PlannerVariant(
+            label="P-ARC-16-all-robots",
+            algorithm="parallel_arc",
+            slug="p_arc_16_all_robots",
+            extra_args=(
+                "--parallel-arc-worker-processes",
+                str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
+                "--parallel-arc-initial-solution-or",
+                "--parallel-arc-conflict-find-assignment",
+                "all_robots_round_robin",
+            ),
+        ),
+        PlannerVariant(
+            label="P-ARC-16-pair-cover",
+            algorithm="parallel_arc",
+            slug="p_arc_16_pair_cover",
+            extra_args=(
+                "--parallel-arc-worker-processes",
+                str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
+                "--parallel-arc-initial-solution-or",
+                "--parallel-arc-conflict-find-assignment",
+                "pair_cover",
+            ),
+        ),
+    ]
 
 
 def build_trial_specs(
@@ -403,7 +745,57 @@ def first_solution_event(metrics: dict[str, Any]) -> dict[str, Any] | None:
     return events[0] if events else None
 
 
-def run_trial(spec: TrialSpec, timeout_seconds: float | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def metrics_output_path(spec: TrialSpec) -> Path:
+    return (
+        spec.output_root
+        / "metrics"
+        / spec.case.key
+        / spec.variant.slug
+        / spec.task_label
+        / f"seed_{spec.seed}.json"
+    )
+
+
+def run_trial(
+    spec: TrialSpec,
+    timeout_seconds: float | None,
+    *,
+    keep_metrics_json: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if keep_metrics_json:
+        metrics_path = metrics_output_path(spec)
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        if metrics_path.exists():
+            metrics_path.unlink()
+        command = spec.command(metrics_path)
+
+        timed_out = False
+        returncode: int | None
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=RUNTIME_CWD,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+            returncode = completed.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            returncode = None
+
+        metrics = load_json(metrics_path)
+        result_row = build_result_row(
+            spec=spec,
+            metrics=metrics,
+            returncode=returncode,
+            timed_out=timed_out,
+            metrics_path=metrics_path,
+        )
+        event_rows = build_event_rows(spec=spec, metrics=metrics)
+        return result_row, event_rows
+
     with tempfile.TemporaryDirectory(prefix="comotion-benchmark-") as tmpdir:
         metrics_path = Path(tmpdir) / "metrics.json"
         command = spec.command(metrics_path)
@@ -431,6 +823,7 @@ def run_trial(spec: TrialSpec, timeout_seconds: float | None) -> tuple[dict[str,
         metrics=metrics,
         returncode=returncode,
         timed_out=timed_out,
+        metrics_path=None,
     )
     event_rows = build_event_rows(spec=spec, metrics=metrics)
     return result_row, event_rows
@@ -442,6 +835,7 @@ def build_result_row(
     metrics: dict[str, Any],
     returncode: int | None,
     timed_out: bool,
+    metrics_path: Path | None,
 ) -> dict[str, Any]:
     first = first_solution_event(metrics)
     return {
@@ -455,6 +849,10 @@ def build_result_row(
         "first_solution_time_seconds": csv_scalar(
             first.get("elapsed_seconds") if first else None
         ),
+        "planning_time_seconds": csv_scalar(metrics.get("planning_time_seconds")),
+        "makespan_timesteps": csv_scalar(metrics.get("makespan_timesteps")),
+        "sum_of_cost_timesteps": csv_scalar(metrics.get("sum_of_cost_timesteps")),
+        "metrics_json": "" if metrics_path is None else str(metrics_path),
     }
 
 
@@ -474,49 +872,200 @@ def build_event_rows(spec: TrialSpec, metrics: dict[str, Any]) -> list[dict[str,
     return rows
 
 
+def build_event_rows_from_result_row(
+    result_row: dict[str, Any],
+    metrics: dict[str, Any],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for event in normalized_solution_events(metrics):
+        rows.append(
+            {
+                "case": result_row.get("case", ""),
+                "task_index": result_row.get("task_index", ""),
+                "seed": result_row.get("seed", ""),
+                "method": result_row.get("method", ""),
+                "elapsed_seconds": event["elapsed_seconds"],
+                "makespan_timesteps": event["makespan_timesteps"],
+            }
+        )
+    return rows
+
+
+def trial_identity_from_values(
+    case: Any,
+    task_index: Any,
+    seed: Any,
+    method: Any,
+) -> tuple[str, str, str, str]:
+    return (str(case), str(task_index), str(seed), str(method))
+
+
+def result_trial_key(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        str(row.get("case", "")),
+        str(row.get("task_index", "")),
+        str(row.get("seed", "")),
+        str(row.get("method", "")),
+        str(row.get("time_limit_seconds", "")),
+    )
+
+
+def spec_trial_key(spec: TrialSpec) -> tuple[str, str, str, str, str]:
+    return (
+        spec.case.key,
+        "" if spec.task_index is None else str(spec.task_index),
+        str(spec.seed),
+        spec.variant.label,
+        format_float(spec.time_limit),
+    )
+
+
+def event_identity(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    return trial_identity_from_values(
+        row.get("case", ""),
+        row.get("task_index", ""),
+        row.get("seed", ""),
+        row.get("method", ""),
+    )
+
+
+def load_csv_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file() or path.stat().st_size == 0:
+        return []
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            return []
+        return [dict(row) for row in reader]
+
+
+def recover_event_rows_from_metrics(
+    result_rows: Sequence[dict[str, Any]],
+    event_rows: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    events = list(event_rows)
+    event_identities = {event_identity(row) for row in events}
+    for result_row in result_rows:
+        identity = trial_identity_from_values(
+            result_row.get("case", ""),
+            result_row.get("task_index", ""),
+            result_row.get("seed", ""),
+            result_row.get("method", ""),
+        )
+        if identity in event_identities:
+            continue
+        metrics_json = str(result_row.get("metrics_json", "")).strip()
+        if not metrics_json:
+            continue
+        recovered_rows = build_event_rows_from_result_row(
+            result_row,
+            load_json(Path(metrics_json)),
+        )
+        if recovered_rows:
+            events.extend(recovered_rows)
+            event_identities.add(identity)
+    return events
+
+
 def run_trials(
     specs: Sequence[TrialSpec],
     *,
     jobs: int,
     timeout_seconds: float | None,
+    keep_metrics_json: bool = False,
+    result_csv_path: Path | None = None,
+    event_csv_path: Path | None = None,
+    skip_existing: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if jobs < 1:
         raise RuntimeError("--jobs must be at least 1")
 
-    result_rows: list[dict[str, Any]] = []
-    event_rows: list[dict[str, Any]] = []
+    if not skip_existing:
+        if result_csv_path is not None:
+            write_csv(result_csv_path, RESULT_COLUMNS, [])
+        if event_csv_path is not None:
+            write_csv(event_csv_path, EVENT_COLUMNS, [])
+
+    result_rows: list[dict[str, Any]] = (
+        load_csv_rows(result_csv_path)
+        if skip_existing and result_csv_path is not None
+        else []
+    )
+    event_rows: list[dict[str, Any]] = (
+        load_csv_rows(event_csv_path)
+        if skip_existing and event_csv_path is not None
+        else []
+    )
+    event_rows = recover_event_rows_from_metrics(result_rows, event_rows)
+    completed_keys = {result_trial_key(row) for row in result_rows}
+    pending_specs = [
+        spec for spec in specs
+        if not skip_existing or spec_trial_key(spec) not in completed_keys
+    ]
+    skipped_count = len(specs) - len(pending_specs)
+    if skipped_count:
+        print(f"skipping {skipped_count} completed trial(s)", flush=True)
+
+    if event_csv_path is not None and skip_existing:
+        existing_event_keys = {event_sort_key(row) for row in load_csv_rows(event_csv_path)}
+        recovered_event_rows = [
+            row for row in event_rows
+            if event_sort_key(row) not in existing_event_keys
+        ]
+        append_csv_rows(event_csv_path, EVENT_COLUMNS, recovered_event_rows)
+
+    def record_finished_trial(
+        row: dict[str, Any],
+        rows: Sequence[dict[str, Any]],
+    ) -> None:
+        result_rows.append(row)
+        event_rows.extend(rows)
+        if result_csv_path is not None:
+            append_csv_rows(result_csv_path, RESULT_COLUMNS, [row])
+        if event_csv_path is not None:
+            append_csv_rows(event_csv_path, EVENT_COLUMNS, rows)
+
+    if not pending_specs:
+        return result_rows, event_rows
 
     if jobs == 1:
-        for index, spec in enumerate(specs, start=1):
+        for index, spec in enumerate(pending_specs, start=1):
             print(
-                f"[{index}/{len(specs)}] {spec.case.key} {spec.variant.label} "
+                f"[{index}/{len(pending_specs)}] {spec.case.key} {spec.variant.label} "
                 f"seed={spec.seed} task={spec.task_label}",
                 flush=True,
             )
-            row, rows = run_trial(spec, timeout_seconds)
-            result_rows.append(row)
-            event_rows.extend(rows)
+            row, rows = run_trial(
+                spec,
+                timeout_seconds,
+                keep_metrics_json=keep_metrics_json,
+            )
+            record_finished_trial(row, rows)
         return result_rows, event_rows
 
     import concurrent.futures
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {
-            pool.submit(run_trial, spec, timeout_seconds): spec
-            for spec in specs
+            pool.submit(
+                run_trial,
+                spec,
+                timeout_seconds,
+                keep_metrics_json=keep_metrics_json,
+            ): spec
+            for spec in pending_specs
         }
         completed_count = 0
         for future in concurrent.futures.as_completed(futures):
             spec = futures[future]
             completed_count += 1
             print(
-                f"[{completed_count}/{len(specs)}] finished {spec.case.key} "
+                f"[{completed_count}/{len(pending_specs)}] finished {spec.case.key} "
                 f"{spec.variant.label} seed={spec.seed} task={spec.task_label}",
                 flush=True,
             )
             row, rows = future.result()
-            result_rows.append(row)
-            event_rows.extend(rows)
+            record_finished_trial(row, rows)
 
     result_rows.sort(key=result_sort_key)
     event_rows.sort(key=event_sort_key)
@@ -542,13 +1091,89 @@ def event_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _lock_file(handle: Any) -> None:
+    try:
+        import fcntl
+    except ImportError:
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(handle: Any) -> None:
+    try:
+        import fcntl
+    except ImportError:
+        return
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _write_csv_rows(
+    writer: csv.DictWriter,
+    columns: Sequence[str],
+    rows: Iterable[dict[str, Any]],
+) -> None:
+    for row in rows:
+        writer.writerow({column: row.get(column, "") for column in columns})
+
+
+def append_csv_rows(
+    path: Path,
+    columns: Sequence[str],
+    rows: Iterable[dict[str, Any]],
+) -> None:
+    rows = list(rows)
+    if not rows:
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    columns = list(columns)
+    with _CSV_WRITE_LOCK:
+        with path.open("a+", newline="") as handle:
+            _lock_file(handle)
+            try:
+                handle.seek(0)
+                fieldnames = next(csv.reader(handle), None)
+                if fieldnames is not None:
+                    if fieldnames != columns:
+                        if not all(field in columns for field in fieldnames):
+                            raise RuntimeError(
+                                f"{path} has unsupported columns: "
+                                f"{', '.join(fieldnames)}"
+                            )
+                        handle.seek(0)
+                        existing_rows = [dict(row) for row in csv.DictReader(handle)]
+                        handle.seek(0)
+                        handle.truncate(0)
+                        writer = csv.DictWriter(handle, fieldnames=columns)
+                        writer.writeheader()
+                        _write_csv_rows(writer, columns, existing_rows)
+                else:
+                    handle.seek(0)
+                    handle.truncate(0)
+                    writer = csv.DictWriter(handle, fieldnames=columns)
+                    writer.writeheader()
+
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    writer = csv.DictWriter(handle, fieldnames=columns)
+                    writer.writeheader()
+                else:
+                    writer = csv.DictWriter(handle, fieldnames=columns)
+                _write_csv_rows(writer, columns, rows)
+                handle.flush()
+                os.fsync(handle.fileno())
+            finally:
+                _unlock_file(handle)
+
+
 def write_csv(path: Path, columns: Sequence[str], rows: Iterable[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as handle:
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    with tmp_path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(columns))
         writer.writeheader()
-        for row in rows:
-            writer.writerow({column: row.get(column, "") for column in columns})
+        _write_csv_rows(writer, columns, rows)
+    tmp_path.replace(path)
 
 
 def write_manifest(
@@ -847,14 +1472,18 @@ def write_anytime_panel_plots(
 def finish_outputs(
     *,
     output_root: Path,
+    result_csv_path: Path | None = None,
+    event_csv_path: Path | None = None,
     result_rows: Sequence[dict[str, Any]],
     event_rows: Sequence[dict[str, Any]],
     plot_kind: str,
 ) -> list[Path]:
+    result_csv_path = result_csv_path or output_root / "results.csv"
+    event_csv_path = event_csv_path or output_root / "solution_events.csv"
     result_rows = sorted(result_rows, key=result_sort_key)
     event_rows = sorted(event_rows, key=event_sort_key)
-    write_csv(output_root / "results.csv", RESULT_COLUMNS, result_rows)
-    write_csv(output_root / "solution_events.csv", EVENT_COLUMNS, event_rows)
+    write_csv(result_csv_path, RESULT_COLUMNS, result_rows)
+    write_csv(event_csv_path, EVENT_COLUMNS, event_rows)
     if plot_kind == "success":
         return write_success_plots(result_rows, output_root)
     if plot_kind == "anytime":
