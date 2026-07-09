@@ -185,6 +185,52 @@ public:
         return size() - 1;
     }
 
+    void config_at_timestep(std::size_t timestep,
+                            std::vector<double> &out) const {
+        if (empty()) {
+            out.clear();
+            return;
+        }
+        if (!has_explicit_timesteps()) {
+            out = (*this)[std::min(timestep, size() - 1)];
+            return;
+        }
+        if (timestep <= waypoint_timesteps_.front()) {
+            out = front();
+            return;
+        }
+        if (timestep >= waypoint_timesteps_.back()) {
+            out = back();
+            return;
+        }
+        const auto upper =
+            std::upper_bound(waypoint_timesteps_.begin(),
+                             waypoint_timesteps_.end(), timestep);
+        const std::size_t next =
+            static_cast<std::size_t>(upper - waypoint_timesteps_.begin());
+        const std::size_t prev = next > 0 ? next - 1 : 0;
+        if (waypoint_timesteps_[prev] == timestep) {
+            out = (*this)[prev];
+            return;
+        }
+        if (next >= size()) {
+            out = back();
+            return;
+        }
+        const double t0 = static_cast<double>(waypoint_timesteps_[prev]);
+        const double t1 = static_cast<double>(waypoint_timesteps_[next]);
+        const double alpha =
+            (t1 > t0) ? ((static_cast<double>(timestep) - t0) / (t1 - t0))
+                      : 0.0;
+        out = interpolateConfig((*this)[prev], (*this)[next], alpha);
+    }
+
+    std::vector<double> config_at_timestep(std::size_t timestep) const {
+        std::vector<double> out;
+        config_at_timestep(timestep, out);
+        return out;
+    }
+
     /// Interpolate path so that path index k corresponds to timestep k.
     /// waypoint_timesteps_ are always in timestep units (never seconds).
     /// If !has_timesteps(), computes them from path geometry (max velocity per edge).

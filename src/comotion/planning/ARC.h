@@ -131,6 +131,8 @@ protected:
         double initial_solution_times_seconds_cpu = 0.0;
         double initial_simplification_times_seconds_wall_clock = 0.0;
         double local_composite_simplification_times_seconds_wall_clock = 0.0;
+        double conflict_detection_times_seconds_wall_clock = 0.0;
+        double conflict_detection_times_seconds_cpu = 0.0;
         double conflict_resolution_times_seconds_wall_clock = 0.0;
         double conflict_resolution_times_seconds_total = 0.0;
         double conflict_resolution_times_seconds_cpu = 0.0;
@@ -140,6 +142,14 @@ protected:
     using Clock = std::chrono::steady_clock;
 
     struct RepairWindow {
+        int window_start_t = 0;
+        int window_end_t = 0;
+        std::vector<int> history_event_ids;
+    };
+
+    struct AppliedRepairHistoryEvent {
+        int event_id = -1;
+        std::vector<int> robots;
         int window_start_t = 0;
         int window_end_t = 0;
     };
@@ -214,7 +224,8 @@ protected:
     static nlohmann::json
     plannerStatsJsonFromSummary(
         const ArcPlannerStatsSummary &summary,
-        const std::vector<double> *conflict_resolution_times_seconds = nullptr);
+        const std::vector<double> *conflict_resolution_times_seconds = nullptr,
+        const std::vector<double> *conflict_detection_times_seconds = nullptr);
 
     void initializeConflictScanStarts(std::size_t robot_count);
     CompositePathValidationOptions conflictScanOptions() const;
@@ -226,6 +237,10 @@ protected:
 
     void recordAppliedRepairHistory(const std::vector<int> &robots,
                                     int window_start_t, int window_end_t);
+    const std::vector<AppliedRepairHistoryEvent> &
+    appliedRepairHistoryEvents() const {
+        return applied_repair_history_events_;
+    }
 
     virtual SubproblemConflict
     expandConflictForSubproblem(const Conflict &conflict) const;
@@ -235,7 +250,11 @@ protected:
     // windows that intersect the proposed conflict patch window.
     std::vector<int> subproblemRobotsForConflict(int robot_i, int robot_j,
                                                  int window_start_t,
-                                                 int window_end_t) const;
+                                                 int window_end_t,
+                                                 std::vector<
+                                                     SubproblemConflict::
+                                                         ExpansionTraceStep> *
+                                                     trace_out = nullptr) const;
     const std::vector<RepairWindow> *
     repairWindowsForRobots(int robot_i, int robot_j) const;
     int conflictWindowStart(const Conflict &conflict) const {
@@ -244,6 +263,7 @@ protected:
     std::vector<Path> solution_paths_;
     std::map<int, std::map<int, std::vector<RepairWindow>>>
         repair_window_schedule_;
+    std::vector<AppliedRepairHistoryEvent> applied_repair_history_events_;
     std::size_t conflict_scan_robot_count_ = 0;
     std::vector<int> pair_conflict_scan_start_t_;
     std::vector<std::uint64_t> true_arrival_timesteps_;
@@ -275,6 +295,8 @@ protected:
     double initial_solution_times_seconds_cpu_ = 0.0;
     double initial_simplification_times_seconds_wall_clock_ = 0.0;
     double local_composite_simplification_times_seconds_wall_clock_ = 0.0;
+    std::vector<double> conflict_detection_times_seconds_;
+    std::vector<double> conflict_detection_times_cpu_seconds_;
     std::vector<double> conflict_resolution_times_seconds_;
     std::vector<double> conflict_resolution_times_cpu_seconds_;
 };

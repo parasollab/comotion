@@ -69,6 +69,7 @@ struct CompositePathValidationOptions {
     std::size_t conflict_find_parallel_horizon = 0;
     ConflictFindParallelAssignment conflict_find_parallel_assignment =
         ConflictFindParallelAssignment::Auto;
+    std::function<bool()> stop_requested;
 };
 
 inline bool usePairCoverConflictAssignment(

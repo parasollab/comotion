@@ -130,6 +130,12 @@ CASE_CATALOG: dict[str, BenchmarkCase] = {
         executable="mobile_robot_2d_crossing",
         base_args=("--scenario", "parallel", "--num-robots", "128"),
     ),
+    "mobile_parallel_n256": BenchmarkCase(
+        key="mobile_parallel_n256",
+        title="Mobile 2D parallel, 256 robots",
+        executable="mobile_robot_2d_crossing",
+        base_args=("--scenario", "parallel", "--num-robots", "256"),
+    ),
     "mobile_circle_n4": BenchmarkCase(
         key="mobile_circle_n4",
         title="Mobile 2D circle, 4 robots",
@@ -147,6 +153,12 @@ CASE_CATALOG: dict[str, BenchmarkCase] = {
         title="Mobile 2D circle, 16 robots",
         executable="mobile_robot_2d_crossing",
         base_args=("--scenario", "circle", "--num-robots", "16"),
+    ),
+    "mobile_circle_n32": BenchmarkCase(
+        key="mobile_circle_n32",
+        title="Mobile 2D circle, 32 robots",
+        executable="mobile_robot_2d_crossing",
+        base_args=("--scenario", "circle", "--num-robots", "32"),
     ),
     "planar_cross_n4": BenchmarkCase(
         key="planar_cross_n4",
@@ -183,6 +195,12 @@ CASE_CATALOG: dict[str, BenchmarkCase] = {
         title="Planar manipulator cross, 128 robots",
         executable="planar_manipulator_cross",
         base_args=("--scenario", "cross", "--num-robots", "128"),
+    ),
+    "planar_cross_n256": BenchmarkCase(
+        key="planar_cross_n256",
+        title="Planar manipulator cross, 256 robots",
+        executable="planar_manipulator_cross",
+        base_args=("--scenario", "cross", "--num-robots", "256"),
     ),
     "planar_adaptive_n8": BenchmarkCase(
         key="planar_adaptive_n8",
@@ -238,6 +256,7 @@ PAPER_MOBILE_PARALLEL_CASES = (
     "mobile_parallel_n32",
     "mobile_parallel_n64",
     "mobile_parallel_n128",
+    "mobile_parallel_n256",
 )
 PAPER_MOBILE_CIRCLE_CASES = (
     "mobile_circle_n4",
@@ -251,6 +270,7 @@ PAPER_PLANAR_CROSS_CASES = (
     "planar_cross_n32",
     "planar_cross_n64",
     "planar_cross_n128",
+    "planar_cross_n256",
 )
 PAPER_2D_CASES = (
     *PAPER_MOBILE_PARALLEL_CASES,
@@ -967,6 +987,29 @@ def recover_event_rows_from_metrics(
     return events
 
 
+def result_row_is_complete(
+    row: dict[str, Any],
+    *,
+    keep_metrics_json: bool,
+) -> bool:
+    if not keep_metrics_json:
+        return True
+    metrics_json = str(row.get("metrics_json", "")).strip()
+    planning_time = str(row.get("planning_time_seconds", "")).strip()
+    if not metrics_json:
+        return False
+
+    metrics_path = Path(metrics_json)
+    if metrics_path.is_file() and planning_time:
+        return True
+
+    # Some failed benchmark runs do not emit a metrics JSON at all. In that case
+    # the CSV row is still the authoritative record that the trial finished and
+    # failed, so do not keep retrying it forever just because the metrics file is
+    # absent.
+    return not truthy(row.get("success"))
+
+
 def run_trials(
     specs: Sequence[TrialSpec],
     *,
@@ -996,6 +1039,39 @@ def run_trials(
         if skip_existing and event_csv_path is not None
         else []
     )
+    if skip_existing and keep_metrics_json and result_rows:
+        complete_rows = [
+            row for row in result_rows
+            if result_row_is_complete(row, keep_metrics_json=keep_metrics_json)
+        ]
+        incomplete_rows = [
+            row for row in result_rows
+            if not result_row_is_complete(row, keep_metrics_json=keep_metrics_json)
+        ]
+        if incomplete_rows:
+            incomplete_identities = {
+                trial_identity_from_values(
+                    row.get("case", ""),
+                    row.get("task_index", ""),
+                    row.get("seed", ""),
+                    row.get("method", ""),
+                )
+                for row in incomplete_rows
+            }
+            event_rows = [
+                row for row in event_rows
+                if event_identity(row) not in incomplete_identities
+            ]
+            result_rows = complete_rows
+            if result_csv_path is not None:
+                write_csv(result_csv_path, RESULT_COLUMNS, result_rows)
+            if event_csv_path is not None:
+                write_csv(event_csv_path, EVENT_COLUMNS, event_rows)
+            print(
+                f"rerunning {len(incomplete_rows)} incomplete trial row(s) "
+                "with missing metrics JSON",
+                flush=True,
+            )
     event_rows = recover_event_rows_from_metrics(result_rows, event_rows)
     completed_keys = {result_trial_key(row) for row in result_rows}
     pending_specs = [
@@ -1074,19 +1150,19 @@ def run_trials(
 
 def result_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
     return (
-        row.get("case", ""),
-        row.get("task_index", ""),
+        str(row.get("case", "")),
+        str(row.get("task_index", "")),
         int(row.get("seed", 0)),
-        row.get("method", ""),
+        str(row.get("method", "")),
     )
 
 
 def event_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
     return (
-        row.get("case", ""),
-        row.get("task_index", ""),
+        str(row.get("case", "")),
+        str(row.get("task_index", "")),
         int(row.get("seed", 0)),
-        row.get("method", ""),
+        str(row.get("method", "")),
         float(row.get("elapsed_seconds", 0.0)),
     )
 

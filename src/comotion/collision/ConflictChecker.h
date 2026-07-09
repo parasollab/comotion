@@ -21,6 +21,27 @@ struct Conflict {
 };
 
 struct SubproblemConflict {
+    struct ExpansionTraceStep {
+        int from_robot = -1;
+        int added_robot = -1;
+        int window_robot_a = -1;
+        int window_robot_b = -1;
+        int window_start_t = 0;
+        int window_end_t = 0;
+        std::vector<int> history_event_ids;
+
+        template <class Archive>
+        void serialize(Archive &ar, const unsigned int /*version*/) {
+            ar & from_robot;
+            ar & added_robot;
+            ar & window_robot_a;
+            ar & window_robot_b;
+            ar & window_start_t;
+            ar & window_end_t;
+            ar & history_event_ids;
+        }
+    };
+
     std::vector<int> robots;
     int conflict_timestep = 0;
     int window_begin_t = 0;
@@ -31,6 +52,22 @@ struct SubproblemConflict {
     ConflictKind kind = ConflictKind::Vertex;
     std::vector<double> config_i;
     std::vector<double> config_j;
+    std::vector<ExpansionTraceStep> expansion_trace;
+
+    template <class Archive>
+    void serialize(Archive &ar, const unsigned int /*version*/) {
+        ar & robots;
+        ar & conflict_timestep;
+        ar & window_begin_t;
+        ar & window_end_t;
+        ar & seed_robot_i;
+        ar & seed_robot_j;
+        ar & alpha;
+        ar & kind;
+        ar & config_i;
+        ar & config_j;
+        ar & expansion_trace;
+    }
 };
 
 class ConflictChecker {
@@ -107,7 +144,7 @@ private:
     const CollisionChecker &cc_;
 
     // Get config at timestep t, clamping to last config if path is shorter
-    static const std::vector<double> &configAt(const Path &path, std::size_t t);
+    static std::vector<double> configAt(const Path &path, std::size_t t);
     static SubproblemConflict
     defaultExpandedConflict(const Conflict &conflict);
 };

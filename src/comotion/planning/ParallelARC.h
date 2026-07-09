@@ -66,6 +66,17 @@ protected:
         std::vector<int> final_team;
         int window_begin_t = 0;
         int window_end_t = 0;
+        std::vector<SubproblemConflict::ExpansionTraceStep> expansion_trace;
+        std::size_t attempts_launched = 0;
+        std::size_t cancelled_sibling_attempts = 0;
+        std::size_t winner_attempt_index = 0;
+        int winner_slot_index = -1;
+        std::uint32_t winner_planning_seed = 0;
+        std::uint64_t winner_worker_wall_ns = 0;
+        std::uint64_t patch_fingerprint = 0;
+        std::vector<std::uint64_t> local_patch_fingerprints;
+        std::vector<std::uint64_t> local_patch_arrival_timesteps;
+        std::vector<std::uint64_t> post_apply_global_arrival_timesteps;
     };
 
     struct ConflictRoundStats {

@@ -118,6 +118,7 @@ void ARC::resetArcSolveState() {
     resetPlannerRunMetrics();
     solution_paths_.clear();
     repair_window_schedule_.clear();
+    applied_repair_history_events_.clear();
     conflict_scan_robot_count_ = 0;
     pair_conflict_scan_start_t_.clear();
     true_arrival_timesteps_.clear();
@@ -130,6 +131,8 @@ void ARC::resetArcSolveState() {
     initial_solution_times_seconds_cpu_ = 0.0;
     initial_simplification_times_seconds_wall_clock_ = 0.0;
     local_composite_simplification_times_seconds_wall_clock_ = 0.0;
+    conflict_detection_times_seconds_.clear();
+    conflict_detection_times_cpu_seconds_.clear();
     conflict_resolution_times_seconds_.clear();
     conflict_resolution_times_cpu_seconds_.clear();
 }
@@ -236,9 +239,20 @@ void ARC::recordAppliedRepairHistory(const std::vector<int> &robots,
     if (unique_robots.empty())
         return;
 
+    AppliedRepairHistoryEvent history_event;
+    history_event.event_id =
+        static_cast<int>(applied_repair_history_events_.size());
+    history_event.robots.assign(unique_robots.begin(), unique_robots.end());
+    history_event.window_start_t = window_start_t;
+    history_event.window_end_t = window_end_t;
+    applied_repair_history_events_.push_back(history_event);
+
     const auto insertWindow = [&](int robot_a, int robot_b) {
         auto &windows = repair_window_schedule_[robot_a][robot_b];
-        RepairWindow merged{window_start_t, window_end_t};
+        RepairWindow merged;
+        merged.window_start_t = window_start_t;
+        merged.window_end_t = window_end_t;
+        merged.history_event_ids.push_back(history_event.event_id);
         std::vector<RepairWindow> next;
         next.reserve(windows.size() + 1);
         bool inserted = false;
@@ -261,8 +275,17 @@ void ARC::recordAppliedRepairHistory(const std::vector<int> &robots,
                 std::min(merged.window_start_t, window.window_start_t);
             merged.window_end_t =
                 std::max(merged.window_end_t, window.window_end_t);
+            merged.history_event_ids.insert(merged.history_event_ids.end(),
+                                            window.history_event_ids.begin(),
+                                            window.history_event_ids.end());
         }
 
+        std::sort(merged.history_event_ids.begin(),
+                  merged.history_event_ids.end());
+        merged.history_event_ids.erase(
+            std::unique(merged.history_event_ids.begin(),
+                        merged.history_event_ids.end()),
+            merged.history_event_ids.end());
         if (!inserted)
             next.push_back(merged);
         windows = std::move(next);
@@ -473,17 +496,6 @@ void ARC::finishInitialIndividualPaths(std::vector<Path> &working_paths) {
     const auto [sum_of_cost_timesteps, makespan_timesteps] =
         arcSolutionMetricsFromArrivalTimesteps(true_arrival_timesteps_);
     setSolutionMetrics(sum_of_cost_timesteps, makespan_timesteps);
-
-    const size_t res = problem_->resolution();
-    const double vmax = problem_->vmax();
-    for (auto &p : working_paths)
-        p.interpolate_to_timesteps(res, vmax);
-
-    // Keep the initial independent paths on a shared global horizon so ARC's
-    // first local subproblem window matches the historical time axis. Conflict
-    // scans operate directly on solution_paths_ afterward and no longer rebuild
-    // equalized copies each iteration.
-    equalizePaths(working_paths);
 }
 
 bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
@@ -502,8 +514,12 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
 
     // max_t = max path length over involved robots (match mr-vamp)
     size_t max_t = 0;
-    for (int r : involved_robots)
-        max_t = std::max(max_t, working_paths[static_cast<std::size_t>(r)].size());
+    for (int r : involved_robots) {
+        const auto &path = working_paths[static_cast<std::size_t>(r)];
+        const std::size_t path_horizon =
+            path.empty() ? 0 : path.arrival_timestep() + 1;
+        max_t = std::max(max_t, path_horizon);
+    }
     if (max_t == 0)
         return false;
 
@@ -514,7 +530,15 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
     if (end_t == 0 && max_t > 0)
         end_t = 1;
 
+    const auto recordWindow = [&]() {
+        if (window_start_t_out)
+            *window_start_t_out = start_t;
+        if (window_end_t_out)
+            *window_end_t_out = end_t;
+    };
+
     for (;;) {
+        recordWindow();
         ++num_subproblem_attempts_;
         const double elapsed_s = std::chrono::duration<double>(
                                        std::chrono::steady_clock::now() - solve_start)
@@ -542,10 +566,10 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
         for (int r : involved_robots) {
             auto &robot = problem_->robot(r);
             const auto &path = working_paths[static_cast<std::size_t>(r)];
-            auto start_config = (start_t < static_cast<int>(path.size()))
-                ? path[static_cast<size_t>(start_t)] : path.back();
-            auto goal_config = (end_t < static_cast<int>(path.size()))
-                ? path[static_cast<size_t>(end_t)] : path.back();
+            auto start_config =
+                path.config_at_timestep(static_cast<std::size_t>(start_t));
+            auto goal_config =
+                path.config_at_timestep(static_cast<std::size_t>(end_t));
             sub_problem->addRobot(robot.model, start_config, goal_config);
         }
 
@@ -587,13 +611,38 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
                 }
                 std::vector<double> lo(ndof, std::numeric_limits<double>::max());
                 std::vector<double> hi(ndof, std::numeric_limits<double>::lowest());
-                size_t seg_start = std::min(static_cast<size_t>(start_t), path.size() - 1);
-                size_t seg_end = std::min(static_cast<size_t>(end_t), path.size() - 1);
-                for (size_t t = seg_start; t <= seg_end && t < path.size(); ++t) {
+                auto include_config = [&](const std::vector<double> &config) {
                     for (int d = 0; d < ndof; ++d) {
-                        double v = path[t][static_cast<size_t>(d)];
+                        double v = config[static_cast<size_t>(d)];
                         lo[d] = std::min(lo[d], v);
                         hi[d] = std::max(hi[d], v);
+                    }
+                };
+                std::vector<double> sampled_config;
+                path.config_at_timestep(static_cast<std::size_t>(start_t),
+                                        sampled_config);
+                include_config(sampled_config);
+                path.config_at_timestep(static_cast<std::size_t>(end_t),
+                                        sampled_config);
+                include_config(sampled_config);
+                if (path.has_explicit_timesteps()) {
+                    for (size_t waypoint = 0; waypoint < path.size();
+                         ++waypoint) {
+                        const size_t waypoint_t = path.timestep_at(waypoint);
+                        if (waypoint_t < static_cast<size_t>(start_t) ||
+                            waypoint_t > static_cast<size_t>(end_t)) {
+                            continue;
+                        }
+                        include_config(path[waypoint]);
+                    }
+                } else {
+                    const size_t seg_start =
+                        std::min(static_cast<size_t>(start_t), path.size() - 1);
+                    const size_t seg_end =
+                        std::min(static_cast<size_t>(end_t), path.size() - 1);
+                    for (size_t t = seg_start; t <= seg_end && t < path.size();
+                         ++t) {
+                        include_config(path[t]);
                     }
                 }
                 double margin = static_cast<double>(cspace_bound_margin_);
@@ -830,8 +879,10 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
             return false;
 
         // Expand subproblem (match mr-vamp: fixed expansion_step) until full window
-        if (start_t == 0 && static_cast<size_t>(end_t) >= max_t)
+        if (start_t == 0 && static_cast<size_t>(end_t) >= max_t) {
+            recordWindow();
             return false;
+        }
         const int prev_start = start_t;
         const size_t prev_end = static_cast<size_t>(end_t);
         start_t = std::max(0, start_t - expansion_step_);
@@ -839,8 +890,10 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
             std::min(static_cast<size_t>(end_t) + expansion_step_, max_t));
         if (!(start_t == prev_start && static_cast<size_t>(end_t) == prev_end))
             ++num_temporal_expansions_;
-        if (start_t == prev_start && static_cast<size_t>(end_t) == prev_end)
+        if (start_t == prev_start && static_cast<size_t>(end_t) == prev_end) {
+            recordWindow();
             return false;
+        }
     }
 }
 
@@ -860,9 +913,6 @@ void ARC::spliceSolutionIntoPaths(const std::vector<int> &involved_robots,
                                   int start_t, int end_t,
                                   const std::vector<const Path *> &local_paths,
                                   std::vector<Path> &working_paths) {
-    const size_t res = problem_->resolution();
-    const double vmax = problem_->vmax();
-
     for (size_t i = 0; i < involved_robots.size(); ++i) {
         int r = involved_robots[i];
         auto &global = working_paths[static_cast<std::size_t>(r)];
@@ -873,145 +923,101 @@ void ARC::spliceSolutionIntoPaths(const std::vector<int> &involved_robots,
         if (local.empty())
             continue;
 
-        const size_t t_e_actual = std::min(static_cast<size_t>(end_t), global.size());
-        const size_t t_s_ts = global.timestep_at(static_cast<size_t>(start_t), res);
-        const size_t t_e_ts = (t_e_actual < global.size())
-                                  ? global.timestep_at(t_e_actual, res)
-                                  : global.timestep_at(t_e_actual > 0 ? t_e_actual - 1 : 0, res);
+        if (global.empty())
+            continue;
 
-        // Local: skip first/last when they duplicate anchors (mr-vamp style)
-        size_t local_begin = (local.size() > 1) ? 1 : 0;
-        size_t local_end_skip =
-            (local.size() > 1 && t_e_actual < global.size()) ? 1 : 0;
-        const size_t prefix_count =
-            std::min(global.size(), static_cast<size_t>(std::max(0, start_t) + 1));
-        const size_t local_count =
-            local.size() > local_begin + local_end_skip
-                ? local.size() - local_begin - local_end_skip
-                : 0;
-        const size_t suffix_count =
-            (t_e_actual < global.size()) ? global.size() - t_e_actual : 0;
+        const size_t window_start =
+            static_cast<size_t>(std::max(0, start_t));
+        const size_t window_end =
+            static_cast<size_t>(std::max(std::max(0, start_t), end_t));
+        const size_t original_arrival = global.arrival_timestep();
+        const bool has_suffix = window_end < original_arrival;
+
+        std::vector<double> global_start_config;
+        std::vector<double> global_end_config;
+        global.config_at_timestep(window_start, global_start_config);
+        global.config_at_timestep(window_end, global_end_config);
 
         constexpr double kAnchorTolerance = 1e-6;
-        if (local_begin > 0 &&
-            static_cast<size_t>(start_t) < global.size()) {
+        if (local.size() > 1) {
             std::ostringstream context;
             context << "ARC splice robot " << r << " window [" << start_t
-                    << "," << end_t << "] dropped local start anchor mismatch";
+                    << "," << end_t << "] local start anchor mismatch";
             comotion::detail::requireConfigNear(
-                local.front(), global[static_cast<size_t>(start_t)],
+                local.front(), global_start_config,
                 kAnchorTolerance, context.str());
         }
-        if (local_end_skip > 0 && t_e_actual < global.size()) {
+        if (local.size() > 1) {
             std::ostringstream context;
             context << "ARC splice robot " << r << " window [" << start_t
-                    << "," << end_t << "] dropped local end anchor mismatch";
-            comotion::detail::requireConfigNear(local.back(), global[t_e_actual],
-                                            kAnchorTolerance,
-                                            context.str());
+                    << "," << end_t << "] local end anchor mismatch";
+            comotion::detail::requireConfigNear(
+                local.back(), global_end_config, kAnchorTolerance,
+                context.str());
         }
-        const size_t t_local_0_ts = local.timestep_at(0, res);
 
-        auto mappedLocalTimestep = [&](size_t t) {
-            const size_t t_local_ts = local.timestep_at(t, res);
+        Path rebuilt;
+        std::vector<size_t> rebuilt_timesteps;
+        rebuilt.reserve(global.size() + local.size() + 2);
+        rebuilt_timesteps.reserve(global.size() + local.size() + 2);
+
+        auto appendWaypoint = [&](size_t timestep,
+                                  const std::vector<double> &config) {
+            if (!rebuilt_timesteps.empty()) {
+                if (timestep < rebuilt_timesteps.back()) {
+                    throw std::runtime_error(
+                        "ARC splice produced non-monotone sparse timesteps");
+                }
+                if (timestep == rebuilt_timesteps.back()) {
+                    rebuilt.back() = config;
+                    return;
+                }
+            }
+            rebuilt.push_back(config);
+            rebuilt_timesteps.push_back(timestep);
+        };
+
+        for (size_t waypoint = 0; waypoint < global.size(); ++waypoint) {
+            const size_t waypoint_t = global.timestep_at(waypoint);
+            if (waypoint_t >= window_start)
+                break;
+            appendWaypoint(waypoint_t, global[waypoint]);
+        }
+        appendWaypoint(window_start, global_start_config);
+
+        const size_t local_t0 = local.timestep_at(0);
+        for (size_t waypoint = 0; waypoint < local.size(); ++waypoint) {
+            const size_t local_t = local.timestep_at(waypoint);
             const auto local_offset = comotion::detail::signedTimestepDelta(
-                t_local_0_ts, t_local_ts,
-                "ARC splice local waypoint offset");
-            return comotion::detail::applySignedTimestepShift(
-                t_s_ts, local_offset, "ARC splice local waypoint");
-        };
+                local_t0, local_t, "ARC sparse splice local waypoint offset");
+            const size_t mapped_t =
+                comotion::detail::applySignedTimestepShift(
+                    window_start, local_offset,
+                    "ARC sparse splice local waypoint");
+            appendWaypoint(mapped_t, local[waypoint]);
+        }
 
-        // Suffix offset: when local ends vs when original segment ended
-        const size_t t_local_end_ts =
-            (local.size() > 0)
-                ? comotion::detail::applySignedTimestepShift(
-                      t_s_ts,
-                      comotion::detail::signedTimestepDelta(
-                          t_local_0_ts,
-                          local.timestep_at(local.size() - 1, res),
-                          "ARC splice local end offset"),
-                      "ARC splice local end timestep")
-                : t_s_ts;
-        const auto suffix_ts_delta = comotion::detail::signedTimestepDelta(
-            t_e_ts, t_local_end_ts, "ARC splice suffix shift");
-
-        auto shiftedSuffixTimestep = [&](size_t t) {
-            return comotion::detail::applySignedTimestepShift(
-                global.timestep_at(t, res), suffix_ts_delta,
-                "ARC splice suffix waypoint");
-        };
-
-        bool dense_timesteps_after_splice = true;
-        std::vector<size_t> explicit_timesteps;
-        const size_t output_count = prefix_count + local_count + suffix_count;
-
-        // Prefix: [0..start_t] inclusive. Dense paths do not need explicit
-        // timestamp storage; sparse paths are checked and materialized below.
-        if (global.has_explicit_timesteps()) {
-            for (size_t t = 0; t < prefix_count; ++t) {
-                if (global.timestep_at(t, res) != t) {
-                    dense_timesteps_after_splice = false;
-                    break;
-                }
+        const size_t local_end_t = rebuilt_timesteps.empty()
+                                       ? window_start
+                                       : rebuilt_timesteps.back();
+        const auto suffix_shift = comotion::detail::signedTimestepDelta(
+            window_end, local_end_t, "ARC sparse splice suffix shift");
+        if (has_suffix) {
+            appendWaypoint(local_end_t, global_end_config);
+            for (size_t waypoint = 0; waypoint < global.size(); ++waypoint) {
+                const size_t waypoint_t = global.timestep_at(waypoint);
+                if (waypoint_t <= window_end)
+                    continue;
+                const size_t shifted_t =
+                    comotion::detail::applySignedTimestepShift(
+                        waypoint_t, suffix_shift,
+                        "ARC sparse splice suffix waypoint");
+                appendWaypoint(shifted_t, global[waypoint]);
             }
         }
 
-        for (size_t t = local_begin, out_index = prefix_count;
-             t + local_end_skip < local.size(); ++t, ++out_index) {
-            if (mappedLocalTimestep(t) != out_index)
-                dense_timesteps_after_splice = false;
-        }
-
-        if (suffix_count > 0) {
-            if (global.has_explicit_timesteps()) {
-                for (size_t t = t_e_actual, out_index = prefix_count + local_count;
-                     t < global.size(); ++t, ++out_index) {
-                    if (shiftedSuffixTimestep(t) != out_index) {
-                        dense_timesteps_after_splice = false;
-                        break;
-                    }
-                }
-            } else if (shiftedSuffixTimestep(t_e_actual) !=
-                       prefix_count + local_count) {
-                dense_timesteps_after_splice = false;
-            }
-        }
-
-        if (!dense_timesteps_after_splice) {
-            explicit_timesteps.reserve(output_count);
-            for (size_t t = 0; t < prefix_count; ++t)
-                explicit_timesteps.push_back(global.timestep_at(t, res));
-            for (size_t t = local_begin; t + local_end_skip < local.size(); ++t)
-                explicit_timesteps.push_back(mappedLocalTimestep(t));
-            for (size_t t = t_e_actual; t < global.size(); ++t) {
-                explicit_timesteps.push_back(shiftedSuffixTimestep(t));
-            }
-        }
-
-        auto &global_configs = static_cast<Path::Base &>(global);
-        const auto erase_begin =
-            global_configs.begin() + static_cast<std::ptrdiff_t>(prefix_count);
-        const auto erase_end =
-            global_configs.begin() + static_cast<std::ptrdiff_t>(t_e_actual);
-        global_configs.erase(erase_begin, erase_end);
-        if (local_count > 0) {
-            const auto insert_pos =
-                global_configs.begin() +
-                static_cast<std::ptrdiff_t>(prefix_count);
-            global_configs.insert(
-                insert_pos,
-                local.begin() + static_cast<std::ptrdiff_t>(local_begin),
-                local.end() - static_cast<std::ptrdiff_t>(local_end_skip));
-        }
-        if (dense_timesteps_after_splice)
-            global.markDenseTimestepsImplicit();
-        else
-            global.set_waypoint_timesteps(explicit_timesteps);
-
-        // Re-interpolate to uniform timesteps
-        if (global.size() >= 2) {
-            global.interpolate_to_timesteps(res, vmax);
-        }
+        global = std::move(rebuilt);
+        global.set_waypoint_timesteps(rebuilt_timesteps);
         if (static_cast<std::size_t>(r) < true_arrival_timesteps_.size()) {
             true_arrival_timesteps_[static_cast<std::size_t>(r)] =
                 static_cast<std::uint64_t>(global.arrival_timestep());
@@ -1074,6 +1080,10 @@ ARC::ArcPlannerStatsSummary ARC::currentArcPlannerStatsSummary() const {
         initial_simplification_times_seconds_wall_clock_;
     summary.local_composite_simplification_times_seconds_wall_clock =
         local_composite_simplification_times_seconds_wall_clock_;
+    summary.conflict_detection_times_seconds_wall_clock =
+        sumSeconds(conflict_detection_times_seconds_);
+    summary.conflict_detection_times_seconds_cpu =
+        sumSeconds(conflict_detection_times_cpu_seconds_);
     summary.conflict_resolution_times_seconds_wall_clock =
         sumSeconds(conflict_resolution_times_seconds_);
     summary.conflict_resolution_times_seconds_total =
@@ -1086,7 +1096,8 @@ ARC::ArcPlannerStatsSummary ARC::currentArcPlannerStatsSummary() const {
 
 nlohmann::json ARC::plannerStatsJsonFromSummary(
     const ArcPlannerStatsSummary &summary,
-    const std::vector<double> *conflict_resolution_times_seconds) {
+    const std::vector<double> *conflict_resolution_times_seconds,
+    const std::vector<double> *conflict_detection_times_seconds) {
     nlohmann::json stats = nlohmann::json::object();
     stats["local_solver_mode"] = arcLocalSolverModeStr(summary.local_solver_mode);
     stats["local_prioritized_strrt_max_iterations"] =
@@ -1109,6 +1120,14 @@ nlohmann::json ARC::plannerStatsJsonFromSummary(
     stats["total_simplification_times_seconds_wall_clock"] =
         summary.initial_simplification_times_seconds_wall_clock +
         summary.local_composite_simplification_times_seconds_wall_clock;
+    stats["conflict_detection_times_seconds_wall_clock"] =
+        summary.conflict_detection_times_seconds_wall_clock;
+    stats["conflict_detection_times_seconds_cpu"] =
+        summary.conflict_detection_times_seconds_cpu;
+    stats["conflict_find_times_seconds_wall_clock"] =
+        summary.conflict_detection_times_seconds_wall_clock;
+    stats["conflict_find_times_seconds_cpu"] =
+        summary.conflict_detection_times_seconds_cpu;
     stats["conflict_resolution_times_seconds_wall_clock"] =
         summary.conflict_resolution_times_seconds_wall_clock;
     stats["conflict_resolution_times_seconds_total"] =
@@ -1130,12 +1149,21 @@ nlohmann::json ARC::plannerStatsJsonFromSummary(
         stats["conflict_resolution_times_seconds"] =
             *conflict_resolution_times_seconds;
     }
+    if (conflict_detection_times_seconds) {
+        stats["conflict_detection_times_seconds"] =
+            *conflict_detection_times_seconds;
+        stats["conflict_find_times_seconds"] =
+            *conflict_detection_times_seconds;
+    }
     return stats;
 }
 
 std::vector<int> ARC::subproblemRobotsForConflict(int robot_i, int robot_j,
                                                   int window_start_t,
-                                                  int window_end_t) const {
+                                                  int window_end_t,
+                                                  std::vector<SubproblemConflict::
+                                                                  ExpansionTraceStep> *
+                                                      trace_out) const {
     if (window_end_t < window_start_t) {
         throw std::runtime_error(
             "ARC conflict expansion window end precedes window start");
@@ -1171,7 +1199,21 @@ std::vector<int> ARC::subproblemRobotsForConflict(int robot_i, int robot_j,
                         window.window_end_t)) {
                     continue;
                 }
-                enqueueRobot(teammate, worklist, team);
+                const bool inserted = team.insert(teammate).second;
+                if (inserted) {
+                    worklist.push_back(teammate);
+                    if (trace_out) {
+                        SubproblemConflict::ExpansionTraceStep step;
+                        step.from_robot = robot;
+                        step.added_robot = teammate;
+                        step.window_robot_a = robot;
+                        step.window_robot_b = teammate;
+                        step.window_start_t = window.window_start_t;
+                        step.window_end_t = window.window_end_t;
+                        step.history_event_ids = window.history_event_ids;
+                        trace_out->push_back(std::move(step));
+                    }
+                }
                 break;
             }
         }
@@ -1199,7 +1241,7 @@ SubproblemConflict ARC::expandConflictForSubproblem(
     expanded.window_end_t = conflict.timestep + initial_window_;
     expanded.robots = subproblemRobotsForConflict(
         conflict.robot_i, conflict.robot_j, expanded.window_begin_t,
-        expanded.window_end_t);
+        expanded.window_end_t, &expanded.expansion_trace);
     expanded.seed_robot_i = conflict.robot_i;
     expanded.seed_robot_j = conflict.robot_j;
     expanded.alpha = conflict.alpha;
@@ -1223,7 +1265,8 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
     const auto finalizePlannerStats = [&](bool exact_solution = false) {
         auto stats = plannerStatsJsonFromSummary(
             currentArcPlannerStatsSummary(),
-            &conflict_resolution_times_seconds_);
+            &conflict_resolution_times_seconds_,
+            &conflict_detection_times_seconds_);
         stats["solution_events"] = nlohmann::json::array();
         if (exact_solution && makespanTimesteps()) {
             stats["solution_events"].push_back({
@@ -1265,8 +1308,15 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
 
         // Scan the current timestep-synchronized global paths directly.
         CompositePathValidationOptions options = conflictScanOptions();
+        options.stop_requested = [&]() {
+            return std::chrono::duration<double>(
+                       Clock::now() - start_time)
+                       .count() >= timeLimit;
+        };
         ConflictChecker conflict_checker(problem_->collisionChecker());
         std::vector<std::size_t> next_t_begin_by_pair;
+        const auto conflict_detection_start = Clock::now();
+        const double conflict_detection_cpu_start = processCpuSeconds();
         const auto conflicts = conflict_checker.findConflicts(
             solution_paths_, ptrs, options, 0, 1, true,
             [this](const Conflict &conflict) {
@@ -1274,6 +1324,18 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
             },
             nullptr, &next_t_begin_by_pair);
         applyConflictScanProgress(next_t_begin_by_pair);
+        conflict_detection_times_seconds_.push_back(
+            std::chrono::duration<double>(Clock::now() -
+                                          conflict_detection_start)
+                .count());
+        conflict_detection_times_cpu_seconds_.push_back(
+            elapsedProcessCpuSeconds(conflict_detection_cpu_start));
+        elapsed = std::chrono::steady_clock::now() - start_time;
+        elapsed_s = std::chrono::duration<double>(elapsed).count();
+        if (elapsed_s >= timeLimit) {
+            finalizePlannerStats();
+            return ompl::base::PlannerStatus::TIMEOUT;
+        }
         if (conflicts.empty()) {
             finalizePlannerStats(true);
             return ompl::base::PlannerStatus::EXACT_SOLUTION;

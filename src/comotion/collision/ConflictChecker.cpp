@@ -15,11 +15,9 @@ void normalizeRobots(std::vector<int> &robots) {
 
 namespace comotion {
 
-const std::vector<double> &ConflictChecker::configAt(const Path &path,
-                                                     std::size_t t) {
-    if (t >= path.size())
-        return path.back();
-    return path[t];
+std::vector<double> ConflictChecker::configAt(const Path &path,
+                                              std::size_t t) {
+    return path.config_at_timestep(t);
 }
 
 SubproblemConflict

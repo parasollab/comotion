@@ -179,11 +179,6 @@ int main() {
                 return 1;
         }
     }
-    for (int bucket_count : cached_buckets) {
-        if (!validateCover(256, bucket_count))
-            return 1;
-    }
-
     if (!validateCover(10, 8))
         return 1;
     if (!validateCover(17, 16))

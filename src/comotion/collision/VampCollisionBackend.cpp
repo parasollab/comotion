@@ -31,6 +31,7 @@
 #endif
 
 #if COMOTION_HAVE_VAMP && !defined(_WIN32)
+#include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -316,12 +317,43 @@ void markCollidingLanes(const VecT &distances,
     }
 }
 
-template <typename Robot>
-std::array<const std::vector<double> *, kRake> configPointersForPack(
-    const Path &path, const BatchPack &pack) {
-    std::array<const std::vector<double> *, kRake> configs{};
+struct ConfigPointerPack {
+    std::array<std::vector<double>, kRake> sampled;
+    std::array<const std::vector<double> *, kRake> pointers{};
+    std::size_t lanes = 0;
+
+    ConfigPointerPack() = default;
+    ConfigPointerPack(const ConfigPointerPack &) = delete;
+    ConfigPointerPack &operator=(const ConfigPointerPack &) = delete;
+
+    ConfigPointerPack(ConfigPointerPack &&other) noexcept
+        : sampled(std::move(other.sampled)), lanes(other.lanes) {
+        bindPointers();
+    }
+
+    ConfigPointerPack &operator=(ConfigPointerPack &&other) noexcept {
+        if (this == &other)
+            return *this;
+        sampled = std::move(other.sampled);
+        lanes = other.lanes;
+        bindPointers();
+        return *this;
+    }
+
+    void bindPointers() {
+        pointers.fill(nullptr);
+        for (std::size_t lane = 0; lane < lanes; ++lane)
+            pointers[lane] = &sampled[lane];
+    }
+};
+
+ConfigPointerPack configPointersForPack(const Path &path,
+                                        const BatchPack &pack) {
+    ConfigPointerPack configs;
+    configs.lanes = pack.lanes;
     for (std::size_t lane = 0; lane < pack.lanes; ++lane)
-        configs[lane] = &configAt(path, pack.timesteps[lane]);
+        configAt(path, pack.timesteps[lane], configs.sampled[lane]);
+    configs.bindPointers();
     return configs;
 }
 
@@ -409,8 +441,8 @@ PackedRobotSpheres buildPackedRobotSpheresForPack(const RobotModel &robot,
     if constexpr (std::is_same_v<Robot, vamp::robots::Sphere>)
         configureSphereRobot(robot);
 
-    const auto configs = configPointersForPack<Robot>(path, pack);
-    auto block = makeConfigurationBlock<Robot>(configs, pack.lanes);
+    const auto configs = configPointersForPack(path, pack);
+    auto block = makeConfigurationBlock<Robot>(configs.pointers, pack.lanes);
     typename Robot::template Spheres<kRake> spheres;
     Robot::template sphere_fk<kRake>(block, spheres);
     applyBaseTransform<Robot>(robot.getBaseTransform().cast<float>(), spheres);
@@ -496,10 +528,11 @@ bool isRobotPathValidImpl(const RobotModel &robot, const Path &path,
     if (path.empty())
         return true;
 
-    auto packs = makeBatchPacks(0, path.size(), packing);
+    auto packs = makeBatchPacks(0, pathTimestepCount(path), packing);
     for (const auto &pack : packs) {
-        const auto configs = configPointersForPack<Robot>(path, pack);
-        if (!isStateBlockValid<Robot>(robot, configs, pack.lanes, environment))
+        const auto configs = configPointersForPack(path, pack);
+        if (!isStateBlockValid<Robot>(robot, configs.pointers, pack.lanes,
+                                      environment))
             return false;
     }
     return true;
@@ -515,8 +548,9 @@ bool isRobotBatchValidImpl(const RobotModel &robot, const Path &path,
         return true;
 
     for (const auto &pack : packs) {
-        const auto configs = configPointersForPack<Robot>(path, pack);
-        if (!isStateBlockValid<Robot>(robot, configs, pack.lanes, environment))
+        const auto configs = configPointersForPack(path, pack);
+        if (!isStateBlockValid<Robot>(robot, configs.pointers, pack.lanes,
+                                      environment))
             return false;
     }
     return true;
@@ -531,8 +565,9 @@ bool isRobotPackValidImpl(const RobotModel &robot, const Path &path,
     if (path.empty() || pack.lanes == 0)
         return true;
 
-    const auto configs = configPointersForPack<Robot>(path, pack);
-    return isStateBlockValid<Robot>(robot, configs, pack.lanes, environment);
+    const auto configs = configPointersForPack(path, pack);
+    return isStateBlockValid<Robot>(robot, configs.pointers, pack.lanes,
+                                    environment);
 }
 
 template <typename Robot>
@@ -572,17 +607,19 @@ bool isPairPathValidRaked(const RobotModel &robot_a, const Path &path_a,
     if (path_a.empty() || path_b.empty())
         return true;
 
-    const std::size_t max_t = std::max(path_a.size(), path_b.size());
+    const std::size_t max_t =
+        std::max(pathTimestepCount(path_a), pathTimestepCount(path_b));
     const std::size_t end = std::min(max_t, t_end);
     if (t_begin >= end)
         return true;
 
     const auto packs = makeBatchPacks(t_begin, end, packing);
     for (const auto &pack : packs) {
-        const auto configs_a = configPointersForPack<RobotA>(path_a, pack);
-        const auto configs_b = configPointersForPack<RobotB>(path_b, pack);
-        if (firstCollidingLane<RobotA, RobotB>(robot_a, configs_a, robot_b,
-                                               configs_b, pack.lanes)) {
+        const auto configs_a = configPointersForPack(path_a, pack);
+        const auto configs_b = configPointersForPack(path_b, pack);
+        if (firstCollidingLane<RobotA, RobotB>(
+                robot_a, configs_a.pointers, robot_b, configs_b.pointers,
+                pack.lanes)) {
             return false;
         }
     }
@@ -597,10 +634,11 @@ bool isPairPackValidRaked(const RobotModel &robot_a, const Path &path_a,
     if (path_a.empty() || path_b.empty() || pack.lanes == 0)
         return true;
 
-    const auto configs_a = configPointersForPack<RobotA>(path_a, pack);
-    const auto configs_b = configPointersForPack<RobotB>(path_b, pack);
-    return !firstCollidingLane<RobotA, RobotB>(robot_a, configs_a, robot_b,
-                                               configs_b, pack.lanes)
+    const auto configs_a = configPointersForPack(path_a, pack);
+    const auto configs_b = configPointersForPack(path_b, pack);
+    return !firstCollidingLane<RobotA, RobotB>(
+                robot_a, configs_a.pointers, robot_b, configs_b.pointers,
+                pack.lanes)
                 .has_value();
 }
 
@@ -611,10 +649,10 @@ std::optional<std::size_t> findFirstPairPackConflictTimestep(
     if (path_a.empty() || path_b.empty() || pack.lanes == 0)
         return std::nullopt;
 
-    const auto configs_a = configPointersForPack<RobotA>(path_a, pack);
-    const auto configs_b = configPointersForPack<RobotB>(path_b, pack);
+    const auto configs_a = configPointersForPack(path_a, pack);
+    const auto configs_b = configPointersForPack(path_b, pack);
     return earliestCollidingTimestepInPack<RobotA, RobotB>(
-        robot_a, configs_a, robot_b, configs_b, pack);
+        robot_a, configs_a.pointers, robot_b, configs_b.pointers, pack);
 }
 
 template <typename GoalRobot, typename PriorRobot>
@@ -629,19 +667,22 @@ GoalHoldConstraint computeGoalHoldConstraintRaked(
     std::array<const std::vector<double> *, kRake> goal_configs{};
     goal_configs.fill(&goal_config);
 
-    for (std::size_t remaining = prior_path.size(); remaining > 0;) {
+    const std::size_t horizon = pathTimestepCount(prior_path);
+    for (std::size_t remaining = horizon; remaining > 0;) {
         const std::size_t lanes = std::min<std::size_t>(kRake, remaining);
         std::array<const std::vector<double> *, kRake> prior_configs{};
+        std::array<std::vector<double>, kRake> prior_samples{};
         for (std::size_t lane = 0; lane < lanes; ++lane) {
             const std::size_t timestep = remaining - 1 - lane;
-            prior_configs[lane] = &prior_path[timestep];
+            configAt(prior_path, timestep, prior_samples[lane]);
+            prior_configs[lane] = &prior_samples[lane];
         }
 
         auto lane = firstCollidingLane<GoalRobot, PriorRobot>(
             goal_robot, goal_configs, prior_robot, prior_configs, lanes);
         if (lane) {
             const std::size_t conflict_timestep = remaining - 1 - *lane;
-            if (conflict_timestep + 1 == prior_path.size())
+            if (conflict_timestep + 1 == horizon)
                 return GoalHoldConstraint{0, true};
             return GoalHoldConstraint{conflict_timestep + 1, false};
         }
@@ -933,7 +974,8 @@ public:
         if (path_a.empty() || path_b.empty())
             return std::nullopt;
 
-        const std::size_t max_t = std::max(path_a.size(), path_b.size());
+        const std::size_t max_t =
+            std::max(pathTimestepCount(path_a), pathTimestepCount(path_b));
         const std::size_t end = std::min(max_t, t_end);
         if (t_begin >= end)
             return std::nullopt;
@@ -949,12 +991,8 @@ public:
 
         const auto packs = makeBatchPacks(t_begin, end, VampBatchPacking::Linear);
         for (const auto &pack : packs) {
-            std::array<const std::vector<double> *, kRake> configs_a{};
-            std::array<const std::vector<double> *, kRake> configs_b{};
-            for (std::size_t lane = 0; lane < pack.lanes; ++lane) {
-                configs_a[lane] = &configAt(path_a, pack.timesteps[lane]);
-                configs_b[lane] = &configAt(path_b, pack.timesteps[lane]);
-            }
+            const auto configs_a = configPointersForPack(path_a, pack);
+            const auto configs_b = configPointersForPack(path_b, pack);
 
             std::optional<std::size_t> pack_timestep;
             switch (robot_a.robotFamily()) {
@@ -964,25 +1002,29 @@ public:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Sphere,
                                                         vamp::robots::Sphere>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Panda:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Sphere,
                                                         vamp::robots::Panda>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::UR5:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Sphere,
                                                         vamp::robots::UR5>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Planar3:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Sphere,
                                                         vamp::robots::Planar3>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Unknown:
                     throwUnsupportedRobotFamily(robot_b, "findFirstPairPathConflict");
@@ -994,25 +1036,29 @@ public:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Panda,
                                                         vamp::robots::Sphere>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Panda:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Panda,
                                                         vamp::robots::Panda>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::UR5:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Panda,
                                                         vamp::robots::UR5>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Planar3:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Panda,
                                                         vamp::robots::Planar3>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Unknown:
                     throwUnsupportedRobotFamily(robot_b, "findFirstPairPathConflict");
@@ -1024,25 +1070,29 @@ public:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::UR5,
                                                         vamp::robots::Sphere>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Panda:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::UR5,
                                                         vamp::robots::Panda>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::UR5:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::UR5,
                                                         vamp::robots::UR5>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Planar3:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::UR5,
                                                         vamp::robots::Planar3>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Unknown:
                     throwUnsupportedRobotFamily(robot_b, "findFirstPairPathConflict");
@@ -1054,25 +1104,29 @@ public:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Planar3,
                                                         vamp::robots::Sphere>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Panda:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Planar3,
                                                         vamp::robots::Panda>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::UR5:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Planar3,
                                                         vamp::robots::UR5>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Planar3:
                     pack_timestep =
                         earliestCollidingTimestepInPack<vamp::robots::Planar3,
                                                         vamp::robots::Planar3>(
-                            robot_a, configs_a, robot_b, configs_b, pack);
+                            robot_a, configs_a.pointers, robot_b,
+                            configs_b.pointers, pack);
                     break;
                 case RobotModel::RobotFamily::Unknown:
                     throwUnsupportedRobotFamily(robot_b, "findFirstPairPathConflict");
@@ -2191,6 +2245,10 @@ private:
         try {
             for (std::size_t segment_begin = global_begin; segment_begin < end;
                  segment_begin += std::min(horizon, end - segment_begin)) {
+                if (options.stop_requested && options.stop_requested()) {
+                    shutdownWorkers(true);
+                    return out;
+                }
                 const std::size_t segment_end =
                     segment_begin + std::min(horizon, end - segment_begin);
                 const auto segment_robot_used = robot_used;
@@ -2230,42 +2288,90 @@ private:
                 }
 
                 std::vector<ConflictCandidate> candidates;
+                std::vector<char> worker_done(workers.size(), 0);
+                std::size_t remaining_workers = workers.size();
+                while (remaining_workers > 0) {
+                    if (options.stop_requested && options.stop_requested()) {
+                        shutdownWorkers(true);
+                        return out;
+                    }
 
-                for (auto &worker : workers) {
-                    ProcessScanResultHeader result;
-                    if (!readValue(worker.fd, result)) {
+                    std::vector<pollfd> poll_fds;
+                    std::vector<std::size_t> poll_workers;
+                    poll_fds.reserve(remaining_workers);
+                    poll_workers.reserve(remaining_workers);
+                    for (std::size_t worker_index = 0;
+                         worker_index < workers.size(); ++worker_index) {
+                        if (worker_done[worker_index] ||
+                            workers[worker_index].fd < 0) {
+                            continue;
+                        }
+                        pollfd pfd {};
+                        pfd.fd = workers[worker_index].fd;
+                        pfd.events = POLLIN | POLLHUP | POLLERR;
+                        poll_fds.push_back(pfd);
+                        poll_workers.push_back(worker_index);
+                    }
+
+                    int poll_rc = -1;
+                    do {
+                        poll_rc = ::poll(
+                            poll_fds.data(),
+                            static_cast<nfds_t>(poll_fds.size()), 50);
+                    } while (poll_rc < 0 && errno == EINTR);
+                    if (poll_rc < 0) {
                         throw std::runtime_error(
-                            "Process-parallel VAMP conflict finder result read "
+                            "Process-parallel VAMP conflict finder poll "
                             "failed");
                     }
-                    std::vector<RawConflictCandidate> raw_candidates(
-                        static_cast<std::size_t>(result.candidate_count));
-                    if (!raw_candidates.empty() &&
-                        !readExact(worker.fd, raw_candidates.data(),
-                                   raw_candidates.size() *
-                                       sizeof(RawConflictCandidate))) {
-                        throw std::runtime_error(
-                            "Process-parallel VAMP conflict finder candidate "
-                            "read failed");
-                    }
+                    if (poll_rc == 0)
+                        continue;
 
-                    candidates.reserve(candidates.size() +
-                                       raw_candidates.size());
-                    for (const auto &raw : raw_candidates) {
-                        const auto robot_i =
-                            static_cast<std::size_t>(raw.robot_i);
-                        const auto robot_j =
-                            static_cast<std::size_t>(raw.robot_j);
-                        const auto t = static_cast<std::size_t>(raw.timestep);
-                        candidates.push_back(ConflictCandidate{
-                            CompositeConflict{
-                                ConflictScope::InterRobot,
-                                static_cast<int>(robot_i),
-                                static_cast<int>(robot_j), t, 0.0,
-                                ConflictKind::Vertex,
-                                configAt(paths[robot_i], t),
-                                configAt(paths[robot_j], t)},
-                            static_cast<std::size_t>(raw.pair_index)});
+                    for (std::size_t i = 0; i < poll_fds.size(); ++i) {
+                        if (poll_fds[i].revents == 0)
+                            continue;
+                        const std::size_t worker_index = poll_workers[i];
+                        auto &worker = workers[worker_index];
+                        ProcessScanResultHeader result;
+                        if (!readValue(worker.fd, result)) {
+                            throw std::runtime_error(
+                                "Process-parallel VAMP conflict finder result "
+                                "read failed");
+                        }
+                        std::vector<RawConflictCandidate> raw_candidates(
+                            static_cast<std::size_t>(result.candidate_count));
+                        if (!raw_candidates.empty() &&
+                            !readExact(worker.fd, raw_candidates.data(),
+                                       raw_candidates.size() *
+                                           sizeof(RawConflictCandidate))) {
+                            throw std::runtime_error(
+                                "Process-parallel VAMP conflict finder "
+                                "candidate read failed");
+                        }
+
+                        worker_done[worker_index] = 1;
+                        if (remaining_workers > 0)
+                            --remaining_workers;
+
+                        candidates.reserve(candidates.size() +
+                                           raw_candidates.size());
+                        for (const auto &raw : raw_candidates) {
+                            const auto robot_i =
+                                static_cast<std::size_t>(raw.robot_i);
+                            const auto robot_j =
+                                static_cast<std::size_t>(raw.robot_j);
+                            const auto t =
+                                static_cast<std::size_t>(raw.timestep);
+                            candidates.push_back(ConflictCandidate{
+                                CompositeConflict{
+                                    ConflictScope::InterRobot,
+                                    static_cast<int>(robot_i),
+                                    static_cast<int>(robot_j), t, 0.0,
+                                    ConflictKind::Vertex,
+                                    configAt(paths[robot_i], t),
+                                    configAt(paths[robot_j], t)},
+                                static_cast<std::size_t>(raw.pair_index)});
+                        }
                     }
                 }
 

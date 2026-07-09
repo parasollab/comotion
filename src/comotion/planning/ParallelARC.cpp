@@ -206,6 +206,52 @@ struct WorkerResult {
     }
 };
 
+void hashCombine(std::uint64_t &hash, std::uint64_t value) {
+    hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+}
+
+void hashCombineInt(std::uint64_t &hash, int value) {
+    hashCombine(hash, static_cast<std::uint64_t>(
+                          static_cast<std::int64_t>(value)));
+}
+
+void hashCombineDouble(std::uint64_t &hash, double value) {
+    std::uint64_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value),
+                  "double bit fingerprint requires 64-bit doubles");
+    std::memcpy(&bits, &value, sizeof(bits));
+    hashCombine(hash, bits);
+}
+
+std::uint64_t fingerprintPath(const comotion::Path &path) {
+    std::uint64_t hash = 0x14650fb0739d0383ULL;
+    hashCombine(hash, static_cast<std::uint64_t>(path.size()));
+    hashCombine(hash, static_cast<std::uint64_t>(path.arrival_timestep()));
+    hashCombine(hash, path.has_explicit_timesteps() ? 1ULL : 0ULL);
+    for (std::size_t waypoint = 0; waypoint < path.size(); ++waypoint) {
+        hashCombine(hash, static_cast<std::uint64_t>(path.timestep_at(waypoint)));
+        const auto &config = path[waypoint];
+        hashCombine(hash, static_cast<std::uint64_t>(config.size()));
+        for (const double value : config)
+            hashCombineDouble(hash, value);
+    }
+    return hash;
+}
+
+std::uint64_t fingerprintPatches(
+    const std::vector<WorkerResult::PathPatch> &patches) {
+    std::uint64_t hash = 0x6a09e667f3bcc909ULL;
+    hashCombine(hash, static_cast<std::uint64_t>(patches.size()));
+    for (const auto &patch : patches) {
+        hashCombineInt(hash, patch.robot_id);
+        hashCombine(hash, patch.base_version);
+        hashCombineInt(hash, patch.window_start_t);
+        hashCombineInt(hash, patch.window_end_t);
+        hashCombine(hash, fingerprintPath(patch.local_path));
+    }
+    return hash;
+}
+
 struct InitialPlanCommand {
     bool quit = false;
     int robot_id = -1;
@@ -256,6 +302,9 @@ struct RepairWorkerCommand {
     int task_index = -1;
     int attempt_index = -1;
     std::uint32_t planning_seed = 0;
+    comotion::SubproblemConflict conflict;
+    std::vector<int> path_robot_ids;
+    std::vector<comotion::Path> path_snapshots;
 
     template <class Archive>
     void serialize(Archive &ar, const unsigned int /*version*/) {
@@ -264,6 +313,9 @@ struct RepairWorkerCommand {
         ar & task_index;
         ar & attempt_index;
         ar & planning_seed;
+        ar & conflict;
+        ar & path_robot_ids;
+        ar & path_snapshots;
     }
 };
 
@@ -997,6 +1049,7 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
     planner_stats_summary.local_solver_mode = local_solver_mode_;
     planner_stats_summary.local_prioritized_strrt_max_iterations =
         local_prioritized_strrt_max_iterations_;
+    nlohmann::json repair_failure_snapshot = nlohmann::json::array();
     const auto finalizePlannerStats = [&]() {
         auto stats = plannerStatsJsonFromSummary(
             planner_stats_summary);
@@ -1126,6 +1179,77 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             worker_processes_ > 1
                 ? "cooperative_signal_with_terminate_fallback"
                 : "";
+        nlohmann::json conflict_rounds = nlohmann::json::array();
+        for (std::size_t round_index = 0;
+             round_index < conflict_round_stats_.size(); ++round_index) {
+            nlohmann::json entries = nlohmann::json::array();
+            const auto &round = conflict_round_stats_[round_index];
+            for (std::size_t entry_index = 0;
+                 entry_index < round.entries.size(); ++entry_index) {
+                const auto &entry = round.entries[entry_index];
+                nlohmann::json expansion_trace = nlohmann::json::array();
+                for (const auto &step : entry.expansion_trace) {
+                    expansion_trace.push_back({
+                        {"from_robot", step.from_robot},
+                        {"added_robot", step.added_robot},
+                        {"window_robot_a", step.window_robot_a},
+                        {"window_robot_b", step.window_robot_b},
+                        {"window_start_t", step.window_start_t},
+                        {"window_end_t", step.window_end_t},
+                        {"history_event_ids", step.history_event_ids},
+                    });
+                }
+                entries.push_back({
+                    {"entry_index", entry_index},
+                    {"seed_robot_i", entry.seed_robot_i},
+                    {"seed_robot_j", entry.seed_robot_j},
+                    {"conflict_timestep", entry.conflict_timestep},
+                    {"expanded_team", entry.expanded_team},
+                    {"expanded_team_size", entry.expanded_team.size()},
+                    {"final_team", entry.final_team},
+                    {"final_team_size", entry.final_team.size()},
+                    {"window_begin_t", entry.window_begin_t},
+                    {"window_end_t", entry.window_end_t},
+                    {"expansion_trace", std::move(expansion_trace)},
+                    {"attempts_launched", entry.attempts_launched},
+                    {"cancelled_sibling_attempts",
+                     entry.cancelled_sibling_attempts},
+                    {"winner_attempt_index", entry.winner_attempt_index},
+                    {"winner_slot_index", entry.winner_slot_index},
+                    {"winner_planning_seed", entry.winner_planning_seed},
+                    {"winner_worker_wall_ns", entry.winner_worker_wall_ns},
+                    {"winner_worker_wall_ms",
+                     static_cast<double>(entry.winner_worker_wall_ns) * 1e-6},
+                    {"patch_fingerprint", entry.patch_fingerprint},
+                    {"local_patch_fingerprints",
+                     entry.local_patch_fingerprints},
+                    {"local_patch_arrival_timesteps",
+                     entry.local_patch_arrival_timesteps},
+                    {"post_apply_global_arrival_timesteps",
+                     entry.post_apply_global_arrival_timesteps},
+                });
+            }
+            conflict_rounds.push_back({
+                {"round_index", round_index},
+                {"entry_count", round.entries.size()},
+                {"entries", std::move(entries)},
+            });
+        }
+        stats["parallel_arc_conflict_rounds"] = std::move(conflict_rounds);
+        nlohmann::json repair_history_events = nlohmann::json::array();
+        for (const auto &event : appliedRepairHistoryEvents()) {
+            repair_history_events.push_back({
+                {"history_event_id", event.event_id},
+                {"robots", event.robots},
+                {"robot_count", event.robots.size()},
+                {"window_start_t", event.window_start_t},
+                {"window_end_t", event.window_end_t},
+            });
+        }
+        stats["parallel_arc_applied_repair_history_events"] =
+            std::move(repair_history_events);
+        stats["parallel_arc_repair_failure_snapshot"] =
+            repair_failure_snapshot;
         setPlannerStatsJson(std::move(stats));
     };
 
@@ -1188,6 +1312,11 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         }
 
         CompositePathValidationOptions options = conflictScanOptions();
+        options.stop_requested = [&]() {
+            return std::chrono::duration<double>(
+                       Clock::now() - solve_start)
+                       .count() >= timeLimit;
+        };
         if (conflict_find_mode_ ==
             ParallelArcConflictFindMode::SegmentParallel) {
             options.conflict_find_parallel_workers = effective_workers;
@@ -1197,12 +1326,25 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         }
         ConflictChecker conflict_checker(problem_->collisionChecker());
         std::vector<std::size_t> next_t_begin_by_pair;
+        const auto conflict_detection_start = Clock::now();
+        const double conflict_detection_cpu_start = processCpuSeconds();
         std::vector<SubproblemConflict> conflicts = conflict_checker.findConflicts(
             solution_paths_, ptrs, options, 0, effective_workers, true,
             [this](const Conflict &conflict) {
                 return expandConflictForSubproblem(conflict);
             },
             nullptr, &next_t_begin_by_pair);
+        planner_stats_summary.conflict_detection_times_seconds_wall_clock +=
+            std::chrono::duration<double>(Clock::now() -
+                                          conflict_detection_start)
+                .count();
+        planner_stats_summary.conflict_detection_times_seconds_cpu +=
+            elapsedProcessCpuSeconds(conflict_detection_cpu_start);
+        if (std::chrono::duration<double>(Clock::now() - solve_start).count() >=
+            timeLimit) {
+            finalizePlannerStats();
+            return ompl::base::PlannerStatus::TIMEOUT;
+        }
         if (conflicts.empty())
             return returnExactSolution();
         planner_stats_summary.num_conflicts +=
@@ -1417,9 +1559,15 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             int slot_index = -1;
             std::size_t task_index = 0;
             std::size_t attempt_index = 0;
+            std::uint32_t planning_seed = 0;
+            std::uint64_t worker_wall_ns = 0;
+            Clock::time_point worker_completion_time {};
+            std::size_t attempts_launched_for_task = 0;
+            std::size_t cancelled_sibling_attempts = 0;
             bool cancelled = false;
             bool exit_failed = false;
             bool has_result = false;
+            SubproblemConflict assigned_conflict;
             WorkerResult result;
         };
 
@@ -1430,6 +1578,9 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             pid_t pid = -1;
             std::size_t task_index = 0;
             std::size_t attempt_index = 0;
+            std::uint32_t planning_seed = 0;
+            Clock::time_point launch_time {};
+            SubproblemConflict assigned_conflict;
             bool active = false;
             bool cancel_requested = false;
             std::optional<Clock::time_point> cancel_signal_time;
@@ -1457,7 +1608,6 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         std::vector<int> patched_window_starts(
             solution_paths_.size(), std::numeric_limits<int>::max());
         ConflictRoundStats round_stats;
-        const std::vector<Path> batch_solution_paths = solution_paths_;
         constexpr auto kCancelGrace = std::chrono::milliseconds(250);
 
         struct SignalGuard {
@@ -1477,10 +1627,16 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             }
         };
 
+        const auto globalBudgetExpired = [&]() {
+            const double elapsed_s =
+                std::chrono::duration<double>(Clock::now() - solve_start)
+                    .count();
+            return elapsed_s >= timeLimit;
+        };
+
         auto taskAssignable = [&](std::size_t task_index) {
             const auto &task_state = task_states[task_index];
-            if (task_state.solved || task_state.failed ||
-                task_state.terminal_failure_seen) {
+            if (task_state.solved || task_state.failed) {
                 return false;
             }
             return repair_duplicate_attempts_ || task_state.live_attempts == 0;
@@ -1568,8 +1724,6 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                 }
 
                 installRepairWorkerCancelHandler();
-                solution_paths_ = batch_solution_paths;
-
                 while (true) {
                     RepairWorkerCommand command;
                     if (!readFramedBinary(slot.command_pipe[0], command))
@@ -1584,7 +1738,6 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
 
                     resetRepairWorkerCancelFlag();
                     resetWorkerArcAttemptState();
-                    solution_paths_ = batch_solution_paths;
 
                     const auto &task =
                         tasks[static_cast<std::size_t>(command.task_index)];
@@ -1600,11 +1753,35 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                     try {
                         setPlanningSeed(command.planning_seed);
 
+                        std::vector<Path> worker_paths(
+                            static_cast<std::size_t>(problem_->numRobots()));
+                        if (command.path_robot_ids.size() !=
+                            command.path_snapshots.size()) {
+                            throw std::runtime_error(
+                                "ParallelARC repair command path snapshot "
+                                "count mismatch");
+                        }
+                        for (std::size_t path_index = 0;
+                             path_index < command.path_robot_ids.size();
+                             ++path_index) {
+                            const int robot_id =
+                                command.path_robot_ids[path_index];
+                            if (robot_id < 0 ||
+                                static_cast<std::size_t>(robot_id) >=
+                                    worker_paths.size()) {
+                                throw std::runtime_error(
+                                    "ParallelARC repair command path robot id "
+                                    "out of range");
+                            }
+                            worker_paths[static_cast<std::size_t>(robot_id)] =
+                                command.path_snapshots[path_index];
+                        }
+
                         const auto repair_start = Clock::now();
                         const double repair_cpu_start = processCpuSeconds();
                         const auto outcome = resolveConflictOnPaths(
-                            task.conflict, solve_start, timeLimit,
-                            solution_paths_, false,
+                            command.conflict, solve_start, timeLimit,
+                            worker_paths, false,
                             []() { return repairWorkerCancelRequested(); });
                         const double repair_elapsed_seconds =
                             std::chrono::duration<double>(Clock::now() -
@@ -1712,6 +1889,9 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                     --runtime_task.live_attempts;
             }
             slot.active = false;
+            slot.planning_seed = 0;
+            slot.launch_time = Clock::time_point {};
+            slot.assigned_conflict = SubproblemConflict {};
             slot.cancel_requested = false;
             slot.cancel_signal_time.reset();
         };
@@ -1724,6 +1904,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                 finalized.slot_index = slot.slot_index;
                 finalized.task_index = slot.task_index;
                 finalized.attempt_index = slot.attempt_index;
+                finalized.planning_seed = slot.planning_seed;
+                finalized.assigned_conflict = slot.assigned_conflict;
 
                 RepairWorkerResultHeader header;
                 RepairWorkerResultFooter footer;
@@ -1748,6 +1930,14 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                     slot.cancel_requested || (read_ok && header.cancelled);
                 finalized.exit_failed =
                     !read_ok || (read_ok && header.worker_error);
+                if (read_ok) {
+                    finalized.worker_wall_ns = header.worker_wall_ns;
+                    finalized.worker_completion_time =
+                        slot.launch_time +
+                        std::chrono::nanoseconds(header.worker_wall_ns);
+                } else {
+                    finalized.worker_completion_time = Clock::now();
+                }
 
                 std::uint64_t deserialize_ns = 0;
                 if (!finalized.cancelled && !finalized.exit_failed &&
@@ -1772,6 +1962,9 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                 finalized.slot_index = slot.slot_index;
                 finalized.task_index = slot.task_index;
                 finalized.attempt_index = slot.attempt_index;
+                finalized.planning_seed = slot.planning_seed;
+                finalized.worker_completion_time = Clock::now();
+                finalized.assigned_conflict = slot.assigned_conflict;
                 finalized.cancelled = true;
                 clearActiveSlot(slot);
                 return finalized;
@@ -1789,6 +1982,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             slot.task_index = task_index;
             slot.attempt_index = attempt_index;
             slot.active = true;
+            slot.launch_time = Clock::now();
+            slot.assigned_conflict = task_state.task.conflict;
             slot.cancel_requested = false;
             slot.cancel_signal_time.reset();
             const std::uint32_t worker_seed =
@@ -1796,11 +1991,24 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                                    static_cast<int>(task_index),
                                    slot.slot_index,
                                    static_cast<int>(attempt_index));
+            slot.planning_seed = worker_seed;
             RepairWorkerCommand command;
             command.slot_index = slot.slot_index;
             command.task_index = static_cast<int>(task_index);
             command.attempt_index = static_cast<int>(attempt_index);
             command.planning_seed = worker_seed;
+            command.conflict = slot.assigned_conflict;
+            command.path_robot_ids = slot.assigned_conflict.robots;
+            command.path_snapshots.reserve(command.path_robot_ids.size());
+            for (const int robot_id : command.path_robot_ids) {
+                if (robot_id < 0 ||
+                    static_cast<std::size_t>(robot_id) >=
+                        solution_paths_.size()) {
+                    return false;
+                }
+                command.path_snapshots.push_back(
+                    solution_paths_[static_cast<std::size_t>(robot_id)]);
+            }
             const bool write_ok =
                 writeFramedBinary(slot.command_pipe[1], command);
             if (!write_ok) {
@@ -1811,13 +2019,6 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             ++task_state.attempts_launched;
             ++active_attempts;
             return true;
-        };
-
-        auto assignSlotToNextTask = [&](RepairWorkerSlot &slot) {
-            const auto task_index = nextAssignableTask();
-            if (!task_index)
-                return true;
-            return launchAttempt(slot, *task_index);
         };
 
         auto signalCancelActiveAttempts =
@@ -1876,9 +2077,6 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                     if (!spawnRepairWorker(slot)) {
                         batch_failed = true;
                         launch_failed = true;
-                    } else if (!assignSlotToNextTask(slot)) {
-                        batch_failed = true;
-                        launch_failed = true;
                     }
                 }
             }
@@ -1904,51 +2102,24 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             (void)attempt;
         };
 
-        auto drainCancelledSlots = [&](const std::vector<std::size_t> &slot_ids) {
-            for (const std::size_t slot_id : slot_ids) {
-                if (slot_id >= slots.size())
-                    continue;
-                auto &slot = slots[slot_id];
-                while (!batch_failed && slot.active &&
-                       slot.cancel_requested) {
-                    const auto wait_start = Clock::now();
-                    pollfd pfd {};
-                    pfd.fd = slot.result_pipe[0];
-                    pfd.events = POLLIN | POLLHUP | POLLERR;
-                    int poll_rc = -1;
-                    do {
-                        poll_rc = ::poll(&pfd, 1, 10);
-                    } while (poll_rc < 0 && errno == EINTR);
-                    const std::uint64_t wait_ns =
-                        elapsedNanoseconds(wait_start);
-                    if (poll_rc < 0) {
-                        batch_failed = true;
-                        break;
-                    }
-                    if (poll_rc > 0 && pfd.revents != 0) {
-                        auto cancelled_attempt =
-                            finalizeWorkerResult(slot, wait_ns);
-                        finishCancelledAttempt(
-                            std::move(cancelled_attempt));
-                        if (!assignSlotToNextTask(slot)) {
-                            launch_failed = true;
-                            batch_failed = true;
-                        }
-                        break;
-                    }
-                    forceExpiredCancelledSlots();
-                    if (!slot.active || !slot.cancel_requested)
-                        break;
-                }
-            }
-        };
-
         auto finishFailedAttempt = [&](FinalizedAttempt attempt) {
             mergeAttemptAccounting(attempt, false);
         };
 
         auto applySavedAttempt = [&](FinalizedAttempt attempt) {
             mergeAttemptAccounting(attempt, true);
+            const std::uint64_t patch_fingerprint =
+                fingerprintPatches(attempt.result.patches);
+            std::vector<std::uint64_t> local_patch_fingerprints;
+            std::vector<std::uint64_t> local_patch_arrival_timesteps;
+            local_patch_fingerprints.reserve(attempt.result.patches.size());
+            local_patch_arrival_timesteps.reserve(attempt.result.patches.size());
+            for (const auto &patch : attempt.result.patches) {
+                local_patch_fingerprints.push_back(
+                    fingerprintPath(patch.local_path));
+                local_patch_arrival_timesteps.push_back(
+                    static_cast<std::uint64_t>(patch.local_path.arrival_timestep()));
+            }
             const auto apply_status =
                 applyResult(attempt.result, patched_robots);
             if (apply_status == ApplyResult::Error) {
@@ -1956,22 +2127,87 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                 batch_failed = true;
             }
             if (apply_status == ApplyResult::Applied) {
-                const auto &task =
-                    task_states[attempt.task_index].task;
+                std::vector<std::uint64_t> post_apply_global_arrival_timesteps;
+                post_apply_global_arrival_timesteps.reserve(
+                    attempt.result.final_involved_robots.size());
+                for (const int robot : attempt.result.final_involved_robots) {
+                    if (robot < 0 ||
+                        static_cast<std::size_t>(robot) >= solution_paths_.size()) {
+                        post_apply_global_arrival_timesteps.push_back(0);
+                        continue;
+                    }
+                    post_apply_global_arrival_timesteps.push_back(
+                        static_cast<std::uint64_t>(
+                            solution_paths_[static_cast<std::size_t>(robot)]
+                                .arrival_timestep()));
+                }
                 round_stats.entries.push_back(ConflictRoundEntry{
-                    task.conflict.seed_robot_i,
-                    task.conflict.seed_robot_j,
-                    task.conflict.conflict_timestep,
-                    task.conflict.robots,
+                    attempt.assigned_conflict.seed_robot_i,
+                    attempt.assigned_conflict.seed_robot_j,
+                    attempt.assigned_conflict.conflict_timestep,
+                    attempt.assigned_conflict.robots,
                     attempt.result.final_involved_robots,
-                    task.conflict.window_begin_t,
+                    attempt.result.window_start_t,
                     attempt.result.window_end_t,
+                    attempt.assigned_conflict.expansion_trace,
+                    attempt.attempts_launched_for_task,
+                    attempt.cancelled_sibling_attempts,
+                    attempt.attempt_index,
+                    attempt.slot_index,
+                    attempt.planning_seed,
+                    attempt.worker_wall_ns,
+                    patch_fingerprint,
+                    std::move(local_patch_fingerprints),
+                    std::move(local_patch_arrival_timesteps),
+                    std::move(post_apply_global_arrival_timesteps),
                 });
                 for (const int robot : attempt.result.final_involved_robots) {
                     patched_window_starts[static_cast<std::size_t>(robot)] =
                         attempt.result.window_start_t;
                 }
             }
+        };
+
+        auto attemptPatchLength = [](const FinalizedAttempt &attempt) {
+            std::uint64_t total = 0;
+            for (const auto &patch : attempt.result.patches) {
+                total += static_cast<std::uint64_t>(
+                    patch.local_path.arrival_timestep());
+            }
+            return total;
+        };
+
+        auto preferAttempt = [&](const FinalizedAttempt &lhs,
+                                 const FinalizedAttempt &rhs) {
+            const auto lhs_patch_length = attemptPatchLength(lhs);
+            const auto rhs_patch_length = attemptPatchLength(rhs);
+            if (lhs_patch_length != rhs_patch_length)
+                return lhs_patch_length < rhs_patch_length;
+            if (lhs.worker_completion_time != rhs.worker_completion_time)
+                return lhs.worker_completion_time < rhs.worker_completion_time;
+            if (lhs.worker_wall_ns != rhs.worker_wall_ns)
+                return lhs.worker_wall_ns < rhs.worker_wall_ns;
+            if (lhs.attempt_index != rhs.attempt_index)
+                return lhs.attempt_index < rhs.attempt_index;
+            return lhs.slot_index < rhs.slot_index;
+        };
+
+        auto fillIdleSlots = [&]() {
+            bool assigned = false;
+            for (auto &slot : slots) {
+                if (slot.active)
+                    continue;
+                const auto task_index = nextAssignableTask();
+                if (!task_index)
+                    continue;
+                if (!launchAttempt(slot, *task_index)) {
+                    batch_failed = true;
+                    launch_failed = true;
+                    return false;
+                }
+                assigned = true;
+            }
+            return assigned;
         };
 
         for (auto &slot : slots) {
@@ -2003,21 +2239,12 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         }
 
         while (!batch_failed && unresolved_tasks > 0) {
+            if (globalBudgetExpired()) {
+                batch_failed = true;
+                break;
+            }
             if (active_attempts == 0) {
-                bool assigned = false;
-                for (auto &slot : slots) {
-                    if (slot.active)
-                        continue;
-                    const auto task_index = nextAssignableTask();
-                    if (!task_index)
-                        continue;
-                    if (!launchAttempt(slot, *task_index)) {
-                        batch_failed = true;
-                        launch_failed = true;
-                        break;
-                    }
-                    assigned = true;
-                }
+                const bool assigned = fillIdleSlots();
                 if (batch_failed || !assigned) {
                     batch_failed = true;
                     break;
@@ -2051,6 +2278,10 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             }
 
             if (poll_rc == 0) {
+                if (globalBudgetExpired()) {
+                    batch_failed = true;
+                    break;
+                }
                 forceExpiredCancelledSlots();
                 continue;
             }
@@ -2061,58 +2292,140 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                     ready_slots.push_back(poll_slots[i]);
             }
 
-            std::set<std::size_t> handled_ready_slots;
+            std::vector<FinalizedAttempt> ready_attempts;
+            ready_attempts.reserve(ready_slots.size());
             for (const std::size_t slot_index : ready_slots) {
-                if (handled_ready_slots.count(slot_index) != 0)
-                    continue;
-                handled_ready_slots.insert(slot_index);
                 if (batch_failed || !slots[slot_index].active)
                     continue;
-                auto attempt =
-                    finalizeWorkerResult(slots[slot_index], wait_ns);
+                ready_attempts.push_back(
+                    finalizeWorkerResult(slots[slot_index], wait_ns));
+            }
+
+            std::vector<std::vector<std::size_t>> attempts_by_task(
+                task_states.size());
+            for (std::size_t i = 0; i < ready_attempts.size(); ++i) {
+                auto &attempt = ready_attempts[i];
                 if (attempt.cancelled) {
                     finishCancelledAttempt(std::move(attempt));
-                    if (!assignSlotToNextTask(slots[slot_index])) {
-                        launch_failed = true;
-                        batch_failed = true;
-                    }
                     continue;
                 }
+                if (attempt.task_index >= attempts_by_task.size()) {
+                    batch_failed = true;
+                    launch_failed = true;
+                    break;
+                }
+                attempts_by_task[attempt.task_index].push_back(i);
+            }
+            if (batch_failed)
+                break;
 
-                auto &runtime_task = task_states[attempt.task_index];
-                if (!attempt.has_result || !attempt.result.success) {
-                    runtime_task.terminal_failure_seen = true;
-                    if (runtime_task.live_attempts == 0) {
+            std::vector<FinalizedAttempt> winning_attempts;
+            winning_attempts.reserve(ready_attempts.size());
+            for (std::size_t task_index = 0;
+                 task_index < attempts_by_task.size(); ++task_index) {
+                const auto &attempt_indices = attempts_by_task[task_index];
+                if (attempt_indices.empty())
+                    continue;
+
+                auto &runtime_task = task_states[task_index];
+                int merged_window_start_t = runtime_task.task.conflict.window_begin_t;
+                int merged_window_end_t = runtime_task.task.conflict.window_end_t;
+                bool saw_window_update = false;
+                std::vector<std::size_t> success_indices;
+                success_indices.reserve(attempt_indices.size());
+
+                for (const std::size_t attempt_index : attempt_indices) {
+                    auto &attempt = ready_attempts[attempt_index];
+                    if (!attempt.has_result) {
+                        finishFailedAttempt(std::move(attempt));
                         runtime_task.failed = true;
                         batch_failed = true;
+                        break;
                     }
-                    if (!batch_failed) {
-                        if (!assignSlotToNextTask(slots[slot_index])) {
-                            launch_failed = true;
-                            batch_failed = true;
+                    if (attempt.result.success) {
+                        success_indices.push_back(attempt_index);
+                        continue;
+                    }
+                    if (attempt.result.window_end_t >=
+                            attempt.result.window_start_t &&
+                        !(attempt.result.window_end_t == 0 &&
+                          attempt.result.window_start_t == 0)) {
+                        if (!saw_window_update) {
+                            merged_window_start_t = attempt.result.window_start_t;
+                            merged_window_end_t = attempt.result.window_end_t;
+                            saw_window_update = true;
+                        } else {
+                            merged_window_start_t = std::min(
+                                merged_window_start_t,
+                                attempt.result.window_start_t);
+                            merged_window_end_t = std::max(
+                                merged_window_end_t,
+                                attempt.result.window_end_t);
                         }
                     }
-                    finishFailedAttempt(std::move(attempt));
+                }
+                if (batch_failed)
+                    break;
+
+                if (!success_indices.empty()) {
+                    std::size_t winner_index = success_indices.front();
+                    for (std::size_t i = 1; i < success_indices.size(); ++i) {
+                        const std::size_t candidate_index = success_indices[i];
+                        if (preferAttempt(ready_attempts[candidate_index],
+                                          ready_attempts[winner_index])) {
+                            winner_index = candidate_index;
+                        }
+                    }
+
+                    for (const std::size_t attempt_index : attempt_indices) {
+                        if (attempt_index == winner_index)
+                            continue;
+                        auto &attempt = ready_attempts[attempt_index];
+                        if (!attempt.has_result)
+                            continue;
+                        finishFailedAttempt(std::move(attempt));
+                    }
+
+                    auto winner = std::move(ready_attempts[winner_index]);
+                    winner.attempts_launched_for_task =
+                        runtime_task.attempts_launched;
+                    runtime_task.solved = true;
+                    if (unresolved_tasks > 0)
+                        --unresolved_tasks;
+                    const auto cancelled_slots =
+                        signalCancelActiveAttempts(task_index,
+                                                   winner.slot_index);
+                    winner.cancelled_sibling_attempts =
+                        cancelled_slots.size();
+                    winning_attempts.push_back(std::move(winner));
                     continue;
                 }
 
-                runtime_task.solved = true;
-                if (unresolved_tasks > 0)
-                    --unresolved_tasks;
-
-                const auto cancelled_slots =
-                    signalCancelActiveAttempts(attempt.task_index,
-                                               slots[slot_index].slot_index);
-                if (!assignSlotToNextTask(slots[slot_index])) {
-                    launch_failed = true;
-                    batch_failed = true;
+                for (const std::size_t attempt_index : attempt_indices) {
+                    auto &attempt = ready_attempts[attempt_index];
+                    finishFailedAttempt(std::move(attempt));
                 }
-                for (const auto cancelled_slot : cancelled_slots)
-                    handled_ready_slots.insert(cancelled_slot);
-                drainCancelledSlots(cancelled_slots);
+                if (saw_window_update) {
+                    runtime_task.task.conflict.window_begin_t =
+                        std::max(0, merged_window_start_t);
+                    runtime_task.task.conflict.window_end_t =
+                        std::max(merged_window_end_t,
+                                 runtime_task.task.conflict.conflict_timestep);
+                }
+                if (globalBudgetExpired()) {
+                    runtime_task.failed = true;
+                    batch_failed = true;
+                    break;
+                }
+            }
+            for (auto &attempt : winning_attempts) {
+                if (batch_failed)
+                    break;
                 applySavedAttempt(std::move(attempt));
             }
             forceExpiredCancelledSlots();
+            if (!batch_failed)
+                (void)fillIdleSlots();
         }
 
         if (!batch_failed) {
@@ -2158,6 +2471,28 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         shutdownWorkers(batch_failed);
 
         if (batch_failed) {
+            repair_failure_snapshot = nlohmann::json::array();
+            for (const auto &task_state : task_states) {
+                if (task_state.solved)
+                    continue;
+                const auto &conflict = task_state.task.conflict;
+                repair_failure_snapshot.push_back({
+                    {"task_index", task_state.task_index},
+                    {"solved", task_state.solved},
+                    {"failed", task_state.failed},
+                    {"terminal_failure_seen",
+                     task_state.terminal_failure_seen},
+                    {"live_attempts", task_state.live_attempts},
+                    {"attempts_launched", task_state.attempts_launched},
+                    {"seed_robot_i", conflict.seed_robot_i},
+                    {"seed_robot_j", conflict.seed_robot_j},
+                    {"conflict_timestep", conflict.conflict_timestep},
+                    {"window_begin_t", conflict.window_begin_t},
+                    {"window_end_t", conflict.window_end_t},
+                    {"team", conflict.robots},
+                    {"team_size", conflict.robots.size()},
+                });
+            }
             planner_stats_summary.conflict_resolution_times_seconds_wall_clock +=
                 std::chrono::duration<double>(Clock::now() -
                                               batch_resolution_start)
