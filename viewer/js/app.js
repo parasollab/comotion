@@ -6,7 +6,7 @@
 import * as THREE from "three";
 import { TrackballControls } from "three/examples/jsm/controls/TrackballControls.js";
 import { parseResult, configAt } from "./schema.js";
-import { createURDFLoader, loadURDFAsync } from "./urdf-loader.js?v=3";
+import { createURDFLoader, loadURDFAsync } from "./urdf-loader.js?v=7";
 
 // Panda 7-DOF joint names (matches planner config order)
 const PANDA_JOINT_NAMES = [
@@ -49,16 +49,72 @@ function scaleRgbHex(hex, k) {
 /** Prior light gray, darkened 20% (RGB scale 0.8). */
 const OBSTACLE_COLOR = scaleRgbHex(0xd4d4d4, 0.8);
 
-/** One saturated color per robot (URDF + placeholders). */
-function randomRobotColorHex() {
-  const h = Math.random();
-  const s = 0.52 + Math.random() * 0.35;
-  const l = 0.4 + Math.random() * 0.22;
-  return new THREE.Color().setHSL(h, s, l).getHex();
+const ROBOT_COLOR_PALETTES = [
+  {
+    id: "royal",
+    label: "Royal deep",
+    colors: [
+      0x2447b8, // royal blue
+      0xd4a017, // gold
+      0x6f2da8, // imperial purple
+      0x007a5e, // emerald
+      0xb00020, // ruby
+      0x007c89, // peacock
+      0x7a1e3a, // burgundy
+      0x0b3d91, // sapphire
+      0xa0006d, // royal magenta
+      0x145a32, // deep forest
+      0xb65a00, // burnished orange
+      0x3f2e8c, // indigo
+      0x9e2a2b, // garnet
+      0x008060, // jade
+      0x5c2751, // plum
+      0x4a5d8f, // steel blue
+    ],
+  },
+  {
+    id: "bright",
+    label: "Bright vibrant",
+    colors: [
+      0x0066ff, // electric blue
+      0xffc400, // vivid gold
+      0xff2d55, // hot rose
+      0x00c853, // bright emerald
+      0xff6d00, // vivid orange
+      0x8e24aa, // vivid violet
+      0x00b8d4, // cyan
+      0xff1744, // crimson
+      0x76ff03, // lime
+      0x304ffe, // cobalt
+      0xff00a8, // magenta
+      0x00e5ff, // aqua
+      0xffea00, // yellow
+      0x14b8a6, // teal
+      0xd500f9, // electric purple
+      0xff9100, // amber
+    ],
+  },
+];
+
+const ROBOT_COLOR_PALETTE_BY_ID = new Map(ROBOT_COLOR_PALETTES.map((palette) => [palette.id, palette]));
+let selectedRobotPaletteId = ROBOT_COLOR_PALETTES[0].id;
+
+function currentRobotColorPalette() {
+  return ROBOT_COLOR_PALETTE_BY_ID.get(selectedRobotPaletteId)?.colors ||
+    ROBOT_COLOR_PALETTES[0].colors;
 }
 
-function createRobotSurfaceMaterial(hex) {
-  return new THREE.MeshLambertMaterial({
+function robotColorHexForIndex(index) {
+  const palette = currentRobotColorPalette();
+  return palette[index % palette.length];
+}
+
+function robotColorStyleKey(hex) {
+  return `robot-${hex.toString(16).padStart(6, "0")}`;
+}
+
+function createRobotSurfaceMaterial(hex, styleKey = robotColorStyleKey(hex)) {
+  const material = new THREE.MeshLambertMaterial({
     color: hex,
     vertexColors: false,
     transparent: false,
@@ -66,6 +122,9 @@ function createRobotSurfaceMaterial(hex) {
     depthWrite: true,
     side: THREE.DoubleSide,
   });
+  material.userData.comotionSolidColor = hex;
+  material.userData.comotionColorStyleKey = styleKey;
+  return material;
 }
 
 // DOM refs
@@ -1057,13 +1116,17 @@ function refreshCrossSection2D() {
   scene.add(group);
 }
 
-function createRobotLineMaterial(hex) {
-  return new THREE.LineBasicMaterial({
+function createRobotLineMaterial(hex, styleKey = robotColorStyleKey(hex)) {
+  const material = new THREE.LineBasicMaterial({
     color: hex,
     transparent: false,
     opacity: 1,
     depthWrite: true,
+    depthTest: true,
   });
+  material.userData.comotionSolidColor = hex;
+  material.userData.comotionColorStyleKey = styleKey;
+  return material;
 }
 
 function isUrdfVisualNode(obj) {
@@ -1200,37 +1263,117 @@ function toggleCrossSection2DMode() {
   setCrossSection2DMode(!showCrossSection2D);
 }
 
-/**
- * Replace every drawable material on a robot with a solid flat color.
- * OBJ polylines become LineSegments with default white LineBasicMaterial unless handled here.
- */
+function isStyledRobotMaterial(material, colorHex, requireDoubleSide, styleKey) {
+  return material?.userData?.comotionSolidColor === colorHex &&
+    material?.userData?.comotionColorStyleKey === styleKey &&
+    material.transparent === false &&
+    material.opacity === 1 &&
+    material.depthWrite === true &&
+    material.depthTest === true &&
+    material.colorWrite !== false &&
+    material.wireframe !== true &&
+    (!requireDoubleSide || material.side === THREE.DoubleSide);
+}
+
+function disposeMaterialList(material) {
+  if (Array.isArray(material)) {
+    material.forEach((m) => m?.dispose?.());
+    return;
+  }
+  material?.dispose?.();
+}
+
+function ensureMaterial(material, colorHex, requireDoubleSide, styleKey, factory) {
+  if (Array.isArray(material)) {
+    const styled = material.length > 0 &&
+      material.every((m) => isStyledRobotMaterial(m, colorHex, requireDoubleSide, styleKey));
+    if (styled) return material;
+    disposeMaterialList(material);
+    return material.length > 0 ? material.map(() => factory(colorHex, styleKey)) : factory(colorHex, styleKey);
+  }
+  if (isStyledRobotMaterial(material, colorHex, requireDoubleSide, styleKey)) {
+    return material;
+  }
+  disposeMaterialList(material);
+  return factory(colorHex, styleKey);
+}
+
 function applyRobotSolidColor(root, colorHex) {
-  root.traverse((c) => {
+  const styleKey = robotColorStyleKey(colorHex);
+  root?.traverse?.((c) => {
     if (c.isMesh) {
-      if (Array.isArray(c.material)) {
-        const oldMats = c.material;
-        oldMats.forEach((m) => m.dispose?.());
-        c.material = oldMats.map(() => createRobotSurfaceMaterial(colorHex));
-      } else {
-        c.material?.dispose?.();
-        c.material = createRobotSurfaceMaterial(colorHex);
-      }
+      c.material = ensureMaterial(
+        c.material,
+        colorHex,
+        true,
+        styleKey,
+        createRobotSurfaceMaterial
+      );
+      c.visible = true;
+      c.frustumCulled = false;
       c.castShadow = true;
       c.receiveShadow = true;
       return;
     }
     if (c.isLineSegments || c.isLine || c.isLineLoop) {
-      if (Array.isArray(c.material)) {
-        const oldMats = c.material;
-        oldMats.forEach((m) => m.dispose?.());
-        c.material = oldMats.map(() => createRobotLineMaterial(colorHex));
-      } else {
-        c.material?.dispose?.();
-        c.material = createRobotLineMaterial(colorHex);
-      }
+      c.material = ensureMaterial(
+        c.material,
+        colorHex,
+        false,
+        styleKey,
+        createRobotLineMaterial
+      );
+      c.visible = true;
+      c.frustumCulled = false;
       c.castShadow = false;
       c.receiveShadow = false;
     }
+  });
+}
+
+function refreshRobotSolidColors() {
+  robotMeshes.forEach((entry) => {
+    if ((entry.materialStylePassesRemaining ?? 0) <= 0) return;
+    if (entry.mesh) applyRobotSolidColor(entry.mesh, entry.colorHex);
+    for (const root of uniqueRobotRoots(entry.urdfRobot, entry.collisionUrdfRobot)) {
+      applyRobotSolidColor(root, entry.colorHex);
+    }
+    entry.materialStylePassesRemaining--;
+  });
+}
+
+function applyRobotPaletteToScene() {
+  robotMeshes.forEach((entry, robotIndex) => {
+    const colorHex = robotColorHexForIndex(robotIndex);
+    entry.colorHex = colorHex;
+    entry.materialStylePassesRemaining = 120;
+    if (entry.mesh) applyRobotSolidColor(entry.mesh, colorHex);
+    for (const root of uniqueRobotRoots(entry.urdfRobot, entry.collisionUrdfRobot)) {
+      applyRobotSolidColor(root, colorHex);
+    }
+  });
+  if (showCrossSection2D) refreshCrossSection2D();
+}
+
+function setRobotColorPalette(paletteId) {
+  if (!ROBOT_COLOR_PALETTE_BY_ID.has(paletteId)) return;
+  selectedRobotPaletteId = paletteId;
+  applyRobotPaletteToScene();
+}
+
+function initRobotPaletteSelect() {
+  const select = document.getElementById("palette-select");
+  if (!select) return;
+  select.innerHTML = "";
+  for (const palette of ROBOT_COLOR_PALETTES) {
+    const option = document.createElement("option");
+    option.value = palette.id;
+    option.textContent = palette.label;
+    select.appendChild(option);
+  }
+  select.value = selectedRobotPaletteId;
+  select.addEventListener("change", (event) => {
+    setRobotColorPalette(event.target.value);
   });
 }
 
@@ -1248,7 +1391,13 @@ function buildPlaceholderRobot(robot, colorHex) {
   const mesh = new THREE.Mesh(geom, createRobotSurfaceMaterial(colorHex));
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-  return { mesh, robot, urdfRobot: null, colorHex };
+  return {
+    mesh,
+    robot,
+    urdfRobot: null,
+    colorHex,
+    materialStylePassesRemaining: 120,
+  };
 }
 
 /**
@@ -1626,11 +1775,11 @@ async function waitForUrdfMeshCallbacks(getPending, timeoutMs = 120000) {
 }
 
 /**
- * Load URDF, wait until async mesh files finish populating the tree, then apply solid color.
+ * Load URDF, wait until async mesh files finish populating the tree, then apply robot color.
  * URDFLoader's load() resolves after parse; geometry is added in mesh load callbacks later.
  */
 async function loadUrdfRobotWithSolidColor(assetBase, urdfUrl, colorHex) {
-  const loader = createURDFLoader(assetBase);
+  const loader = createURDFLoader(assetBase, colorHex);
   const getPending =
     typeof loader.getPendingMeshLoads === "function"
       ? () => loader.getPendingMeshLoads()
@@ -1684,8 +1833,8 @@ async function loadResult(data) {
 
   const assetBase = getAssetBaseUrl();
 
-  for (const robot of data.robots) {
-    const robotColor = randomRobotColorHex();
+  for (const [robotIndex, robot] of data.robots.entries()) {
+    const robotColor = robotColorHexForIndex(robotIndex);
     const urdfPaths = robotVisualUrdfCandidates(robot);
     const collisionUrdfPath = robotCollisionUrdfPath(robot);
     if (urdfPaths.length > 0) {
@@ -1732,6 +1881,7 @@ async function loadResult(data) {
           urdfRobot,
           collisionUrdfRobot,
           colorHex: robotColor,
+          materialStylePassesRemaining: 120,
         });
         scene.add(urdfRobot);
         if (collisionUrdfRobot) scene.add(collisionUrdfRobot);
@@ -1806,6 +1956,7 @@ function animate() {
   requestAnimationFrame(animate);
   controls.update();
   syncCameraInputsFromOrbit();
+  refreshRobotSolidColors();
   renderer.render(scene, camera);
 }
 
@@ -1820,6 +1971,7 @@ function init() {
   timestepEl = document.getElementById("timestep");
   playPauseBtn = document.getElementById("play-pause");
   sliderEl = document.getElementById("timestep-slider");
+  initRobotPaletteSelect();
 
   document.getElementById("file-input").addEventListener("change", (e) => {
     const f = e.target.files[0];
