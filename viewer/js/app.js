@@ -6,7 +6,7 @@
 import * as THREE from "three";
 import { TrackballControls } from "three/examples/jsm/controls/TrackballControls.js";
 import { parseResult, configAt } from "./schema.js";
-import { createURDFLoader, loadURDFAsync } from "./urdf-loader.js?v=2";
+import { createURDFLoader, loadURDFAsync } from "./urdf-loader.js?v=3";
 
 // Panda 7-DOF joint names (matches planner config order)
 const PANDA_JOINT_NAMES = [
@@ -36,6 +36,8 @@ const CROSS_SECTION_Z = 0;
 const CROSS_SECTION_EPS = 1e-6;
 const PLANAR3_LINK_LENGTH = 0.3;
 const PLANAR3_LINK_RADIUS = 0.05;
+const PANDA_VAMP_VISUAL_URDF_PATH =
+  "external/como-ompl/external/vamp/resources/panda/panda_spherized.urdf";
 
 function scaleRgbHex(hex, k) {
   const r = Math.round(((hex >> 16) & 0xff) * k);
@@ -1527,15 +1529,42 @@ function withTrailingSlash(url) {
   return url.endsWith("/") ? url : `${url}/`;
 }
 
-function robotVisualUrdfPath(robot) {
+function rawRobotVisualUrdfPath(robot) {
   return robot.visual_urdf_path || robot.urdf_path || "";
+}
+
+function isPandaRobot(robot) {
+  const type = String(robot.robot_type || "").toLowerCase();
+  const path = String(rawRobotVisualUrdfPath(robot)).toLowerCase();
+  return type === "panda" || path.includes("/panda/");
+}
+
+function isLocalPandaSpherizedUrdf(path) {
+  const normalized = String(path || "").replace(/\\/g, "/").toLowerCase();
+  return normalized === "panda/panda_spherized.urdf" ||
+    normalized.endsWith("/resources/panda/panda_spherized.urdf") ||
+    normalized === "resources/panda/panda_spherized.urdf";
+}
+
+function robotVisualUrdfCandidates(robot) {
+  const path = rawRobotVisualUrdfPath(robot);
+  if (!path) return [];
+  const candidates =
+    isPandaRobot(robot) && isLocalPandaSpherizedUrdf(path)
+      ? [PANDA_VAMP_VISUAL_URDF_PATH, path]
+      : [path];
+  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
+}
+
+function robotVisualUrdfPath(robot) {
+  return robotVisualUrdfCandidates(robot)[0] || "";
 }
 
 function robotCollisionUrdfPath(robot) {
   if (robot.collision_urdf_path) return robot.collision_urdf_path;
   if (robot.planning_urdf_path) return robot.planning_urdf_path;
 
-  const visualPath = robotVisualUrdfPath(robot);
+  const visualPath = rawRobotVisualUrdfPath(robot);
   const lowerType = String(robot.robot_type || "").toLowerCase();
   const lowerPath = String(visualPath || "").toLowerCase();
   const isPlanar3 = lowerType === "planar3" || lowerPath.includes("planar3");
@@ -1613,6 +1642,23 @@ async function loadUrdfRobotWithSolidColor(assetBase, urdfUrl, colorHex) {
   return urdfRobot;
 }
 
+async function loadFirstUrdfRobotWithSolidColor(assetBase, urdfPaths, colorHex) {
+  let firstError = null;
+  for (const urdfPath of urdfPaths) {
+    try {
+      const urdfUrl = assetUrl(assetBase, urdfPath);
+      return {
+        urdfPath,
+        urdfRobot: await loadUrdfRobotWithSolidColor(assetBase, urdfUrl, colorHex),
+      };
+    } catch (err) {
+      if (!firstError) firstError = err;
+      console.warn("[viewer] URDF load failed for", urdfPath, err);
+    }
+  }
+  throw firstError || new Error("No URDF paths available");
+}
+
 /**
  * Load result and build scene. Loads URDFs when urdf_path is present.
  */
@@ -1640,12 +1686,23 @@ async function loadResult(data) {
 
   for (const robot of data.robots) {
     const robotColor = randomRobotColorHex();
-    const urdfPath = robotVisualUrdfPath(robot);
+    const urdfPaths = robotVisualUrdfCandidates(robot);
     const collisionUrdfPath = robotCollisionUrdfPath(robot);
-    if (urdfPath) {
+    if (urdfPaths.length > 0) {
       try {
-        const urdfUrl = assetUrl(assetBase, urdfPath);
-        const urdfRobot = await loadUrdfRobotWithSolidColor(assetBase, urdfUrl, robotColor);
+        const { urdfPath, urdfRobot } = await loadFirstUrdfRobotWithSolidColor(
+          assetBase,
+          urdfPaths,
+          robotColor
+        );
+        if (urdfPath !== rawRobotVisualUrdfPath(robot)) {
+          console.info(
+            "[viewer] Using panda visual URDF",
+            urdfPath,
+            "for",
+            robot.name || robot.robot_type
+          );
+        }
         let collisionUrdfRobot = null;
         if (collisionUrdfPath && collisionUrdfPath !== urdfPath) {
           try {
@@ -1680,7 +1737,7 @@ async function loadResult(data) {
         if (collisionUrdfRobot) scene.add(collisionUrdfRobot);
         applyRobotGeometryModeToScene();
       } catch (err) {
-        console.warn("URDF load failed for", urdfPath, err);
+        console.warn("URDF load failed for", urdfPaths, err);
         const ph = buildPlaceholderRobot(robot, robotColor);
         robotMeshes.push(ph);
         scene.add(ph.mesh);

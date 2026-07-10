@@ -221,12 +221,44 @@ std::string toRepoRelativePath(const std::string &path) {
     std::string p = path;
     while (p.size() >= 3 && p.substr(0, 3) == "../")
         p = p.substr(3);
+    const std::string external_vamp_resources =
+        "external/como-ompl/external/vamp/resources/";
+    if (p.rfind(external_vamp_resources, 0) == 0)
+        return p;
+    const auto external_pos =
+        p.find("/external/como-ompl/external/vamp/resources/");
+    if (external_pos != std::string::npos)
+        return p.substr(external_pos + 1);
     const auto pos = p.find("/resources/");
     if (p.rfind("resources/", 0) == 0)
         return p;
     if (pos != std::string::npos)
         return p.substr(pos + 1);
     return p;
+}
+
+std::string resolvePandaVisualUrdfPath(const std::string &collision_urdf,
+                                       const AppOptions &options) {
+    if (options.urdf_explicit)
+        return collision_urdf;
+
+    const std::filesystem::path rel(
+        "external/como-ompl/external/vamp/resources/panda/"
+        "panda_spherized.urdf");
+    std::vector<std::filesystem::path> candidates;
+    if (!g_executable_dir.empty())
+        candidates.push_back(g_executable_dir / ".." / ".." / rel);
+    candidates.push_back(rel);
+    candidates.push_back(std::filesystem::path("..") / rel);
+    candidates.push_back(std::filesystem::path("..") / ".." / rel);
+
+    for (const auto &candidate : candidates) {
+        const auto normalized = candidate.lexically_normal();
+        std::ifstream file(normalized);
+        if (file.good())
+            return normalized.string();
+    }
+    return collision_urdf;
 }
 
 Eigen::Vector3d vector3FromJson(const json &value) {
@@ -1338,7 +1370,8 @@ int main(int argc, char **argv) {
             loadScenarioFromDoc(task_doc, options, task_source);
 
         const std::string collision_urdf = resolveResourcePath(options.urdf_rel);
-        const std::string visual_urdf = collision_urdf;
+        const std::string visual_urdf =
+            resolvePandaVisualUrdfPath(collision_urdf, options);
         const std::string srdf = resolveResourcePath(options.srdf_rel);
 
         const auto robots = loadRobots(generated, collision_urdf, srdf);

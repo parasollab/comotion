@@ -12,13 +12,16 @@ import URDFLoader from "https://unpkg.com/urdf-loader@0.12.6/src/URDFLoader.js";
  * Resolve mesh path from urdf-loader (may be absolute URL or path-relative to URDF dir).
  * @param {string} path - Path passed by URDFLoader
  * @param {string} assetBase - Repo root base URL (trailing slash optional)
+ * @param {string} meshBase - URDF directory base URL (trailing slash optional)
  */
-function resolveMeshUrl(path, assetBase) {
+function resolveMeshUrl(path, assetBase, meshBase = assetBase) {
   if (/^https?:\/\//i.test(path)) {
     return path;
   }
-  const base = assetBase.endsWith("/") ? assetBase : `${assetBase}/`;
-  return new URL(path, base).href;
+  const sanitizedPath = path.replace(/^package:\/\//i, "");
+  const baseInput = meshBase || assetBase;
+  const base = baseInput.endsWith("/") ? baseInput : `${baseInput}/`;
+  return new URL(sanitizedPath, base).href;
 }
 
 /**
@@ -34,6 +37,12 @@ export function createURDFLoader(assetBase) {
   loader.parseVisual = true;
   loader.parseCollision = true;
   let pendingMeshLoads = 0;
+  let meshBaseUrl = assetBase;
+
+  loader.setMeshBaseUrl = (baseUrl) => {
+    meshBaseUrl = baseUrl;
+    loader.workingPath = baseUrl;
+  };
 
   loader.loadMeshCb = function (path, mgr, onComplete) {
     pendingMeshLoads++;
@@ -45,7 +54,7 @@ export function createURDFLoader(assetBase) {
       }
     };
 
-    const fullPath = resolveMeshUrl(path, assetBase);
+    const fullPath = resolveMeshUrl(path, assetBase, meshBaseUrl);
     const pathForExt = fullPath.split("?")[0];
     if (/\.obj$/i.test(pathForExt)) {
       const objLoader = new OBJLoader(mgr);
@@ -97,6 +106,11 @@ export function loadURDFAsync(loader, urdfUrl) {
   return new Promise((resolve, reject) => {
     loader.parseVisual = true;
     loader.parseCollision = true;
+    const urdfBase = new URL("./", urdfUrl).href;
+    loader.workingPath = urdfBase;
+    if (typeof loader.setMeshBaseUrl === "function") {
+      loader.setMeshBaseUrl(urdfBase);
+    }
     loader.load(urdfUrl, resolve, undefined, reject);
   });
 }
