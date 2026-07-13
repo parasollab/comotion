@@ -17,8 +17,11 @@ const PANDA_JOINT_NAMES = [
 // State
 let scene, camera, renderer, controls;
 let ambientLight = null;
+let hemisphereLight = null;
 let sunLight = null;
-/** When true: dim ambient + directional sun (shadows). When false: bright ambient, sun off. */
+let fillLight = null;
+let rimLight = null;
+/** When true: key/fill lighting with shadows. When false: bright ambient, directional lights off. */
 let lightingKeyMode = true;
 /** When true: URDF robots show collision primitives; when false: visual meshes only. */
 let showRobotCollisionGeometry = false;
@@ -51,8 +54,8 @@ const OBSTACLE_COLOR = scaleRgbHex(0xd4d4d4, 0.8);
 
 const ROBOT_COLOR_PALETTES = [
   {
-    id: "royal",
-    label: "Royal deep",
+    id: "neutral",
+    label: "Neutral",
     colors: [
       0x2447b8, // royal blue
       0xd4a017, // gold
@@ -73,25 +76,65 @@ const ROBOT_COLOR_PALETTES = [
     ],
   },
   {
-    id: "bright",
-    label: "Bright vibrant",
+    id: "royal",
+    label: "Royal",
     colors: [
-      0x0066ff, // electric blue
-      0xffc400, // vivid gold
-      0xff2d55, // hot rose
-      0x00c853, // bright emerald
-      0xff6d00, // vivid orange
-      0x8e24aa, // vivid violet
-      0x00b8d4, // cyan
-      0xff1744, // crimson
-      0x76ff03, // lime
-      0x304ffe, // cobalt
-      0xff00a8, // magenta
-      0x00e5ff, // aqua
-      0xffea00, // yellow
-      0x14b8a6, // teal
-      0xd500f9, // electric purple
-      0xff9100, // amber
+      0x0033a0, // royal blue
+      0xd4af37, // metallic gold
+      0x6a0dad, // royal purple
+      0x005a32, // deep emerald
+      0x9b111e, // ruby
+      0x0047ab, // cobalt
+      0x702963, // byzantium
+      0x0f52ba, // sapphire
+      0x800020, // burgundy
+      0x006b54, // jade
+      0xc04000, // mahogany orange
+      0x32127a, // persian indigo
+      0xb31b1b, // garnet
+      0x008080, // regal teal
+      0x4b0082, // indigo
+      0xe0b0ff, // mauve
+      0xbf5700, // burnt gold
+      0x5d3fd3, // iris
+      0x006400, // royal green
+      0x8b008b, // deep magenta
+      0x1f305e, // midnight blue
+      0xa67c00, // antique gold
+      0x722f37, // wine
+      0x2e8b57, // sea emerald
+    ],
+  },
+  {
+    id: "vibrant",
+    label: "Neon",
+    emissiveIntensity: 1.15,
+    receiveShadows: false,
+    colors: [
+      0x00ffff, // electric cyan
+      0xff00ff, // electric magenta
+      0xffff00, // electric yellow
+      0x39ff14, // laser green
+      0xff073a, // neon red
+      0x00ffcc, // aqua glow
+      0xff1493, // hot pink
+      0xccff00, // acid chartreuse
+      0xff5f1f, // blaze orange
+      0x00b7ff, // plasma blue
+      0xee00ff, // neon violet
+      0xaaff00, // toxic lime
+      0xffea00, // highlighter yellow
+      0x00ff66, // green glow
+      0xff0099, // punch pink
+      0x33ffff, // ice cyan
+      0xff3300, // hot vermilion
+      0xbfff00, // volt green
+      0x00ff99, // mint beam
+      0xff00cc, // hot magenta
+      0x99ff00, // neon grass
+      0xff9900, // signal orange
+      0x00ffef, // bright turquoise
+      0xda00ff, // ultraviolet
     ],
   },
 ];
@@ -99,9 +142,12 @@ const ROBOT_COLOR_PALETTES = [
 const ROBOT_COLOR_PALETTE_BY_ID = new Map(ROBOT_COLOR_PALETTES.map((palette) => [palette.id, palette]));
 let selectedRobotPaletteId = ROBOT_COLOR_PALETTES[0].id;
 
+function currentRobotPaletteSpec() {
+  return ROBOT_COLOR_PALETTE_BY_ID.get(selectedRobotPaletteId) || ROBOT_COLOR_PALETTES[0];
+}
+
 function currentRobotColorPalette() {
-  return ROBOT_COLOR_PALETTE_BY_ID.get(selectedRobotPaletteId)?.colors ||
-    ROBOT_COLOR_PALETTES[0].colors;
+  return currentRobotPaletteSpec().colors;
 }
 
 function robotColorHexForIndex(index) {
@@ -110,18 +156,22 @@ function robotColorHexForIndex(index) {
 }
 
 function robotColorStyleKey(hex) {
-  return `robot-${hex.toString(16).padStart(6, "0")}`;
+  return `robot-${selectedRobotPaletteId}-${hex.toString(16).padStart(6, "0")}`;
 }
 
 function createRobotSurfaceMaterial(hex, styleKey = robotColorStyleKey(hex)) {
+  const glow = currentRobotPaletteSpec().emissiveIntensity ?? 0;
   const material = new THREE.MeshLambertMaterial({
     color: hex,
+    emissive: glow > 0 ? hex : 0x000000,
+    emissiveIntensity: glow,
     vertexColors: false,
     transparent: false,
     opacity: 1,
     depthWrite: true,
     side: THREE.DoubleSide,
   });
+  material.toneMapped = glow <= 0;
   material.userData.comotionSolidColor = hex;
   material.userData.comotionColorStyleKey = styleKey;
   return material;
@@ -1300,6 +1350,7 @@ function ensureMaterial(material, colorHex, requireDoubleSide, styleKey, factory
 
 function applyRobotSolidColor(root, colorHex) {
   const styleKey = robotColorStyleKey(colorHex);
+  const receiveShadows = currentRobotPaletteSpec().receiveShadows !== false;
   root?.traverse?.((c) => {
     if (c.isMesh) {
       c.material = ensureMaterial(
@@ -1312,7 +1363,7 @@ function applyRobotSolidColor(root, colorHex) {
       c.visible = true;
       c.frustumCulled = false;
       c.castShadow = true;
-      c.receiveShadow = true;
+      c.receiveShadow = receiveShadows;
       return;
     }
     if (c.isLineSegments || c.isLine || c.isLineLoop) {
@@ -1614,17 +1665,21 @@ function initScene() {
   controls.staticMoving = false;
   controls.dynamicDampingFactor = 0.05;
 
-  ambientLight = new THREE.AmbientLight(0xffffff, 0.22);
+  ambientLight = new THREE.AmbientLight(0xffffff, 0.38);
   scene.add(ambientLight);
 
-  sunLight = new THREE.DirectionalLight(0xffffff, 1.05);
-  sunLight.position.set(0, 0, 100);
+  hemisphereLight = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.48);
+  scene.add(hemisphereLight);
+
+  sunLight = new THREE.DirectionalLight(0xffffff, 1.15);
+  sunLight.position.set(60, -80, 120);
   sunLight.target.position.set(0, 0, 0);
   scene.add(sunLight.target);
   scene.add(sunLight);
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(2048, 2048);
   sunLight.shadow.bias = -0.00015;
+  sunLight.shadow.normalBias = 0.015;
   const sc = sunLight.shadow.camera;
   sc.near = 0.5;
   sc.far = 220;
@@ -1633,6 +1688,20 @@ function initScene() {
   sc.top = 10;
   sc.bottom = -10;
   sc.updateProjectionMatrix();
+
+  fillLight = new THREE.DirectionalLight(0xffffff, 0.72);
+  fillLight.position.set(-80, 55, 75);
+  fillLight.target.position.set(0, 0, 0);
+  scene.add(fillLight.target);
+  scene.add(fillLight);
+  fillLight.castShadow = false;
+
+  rimLight = new THREE.DirectionalLight(0xe8fbff, 0.42);
+  rimLight.position.set(-50, -90, 95);
+  rimLight.target.position.set(0, 0, 0);
+  scene.add(rimLight.target);
+  scene.add(rimLight);
+  rimLight.castShadow = false;
 
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -1647,24 +1716,34 @@ function initScene() {
 function syncLightingToggleButton() {
   const btn = document.getElementById("lighting-toggle");
   if (!btn) return;
-  btn.textContent = lightingKeyMode ? "Key + ambient" : "Ambient only";
+  btn.textContent = lightingKeyMode ? "Key + fill" : "Ambient only";
   btn.title = lightingKeyMode
-    ? "Directional sun + dim ambient (shadows on). Click for ambient-only fill."
-    : "Even ambient, directional off. Click to restore key light + shadows.";
+    ? "Angled key, broad fill, and shadows. Click for ambient-only lighting."
+    : "Even ambient lighting. Click to restore key, fill, and shadows.";
 }
 
 function applyLightingMode() {
-  if (!ambientLight || !sunLight) return;
+  if (!ambientLight || !hemisphereLight || !sunLight || !fillLight || !rimLight) return;
   if (lightingKeyMode) {
-    ambientLight.intensity = 0.22;
-    sunLight.intensity = 1.05;
+    ambientLight.intensity = 0.38;
+    hemisphereLight.intensity = 0.48;
+    sunLight.intensity = 1.15;
     sunLight.visible = true;
     sunLight.castShadow = true;
+    fillLight.intensity = 0.72;
+    fillLight.visible = true;
+    rimLight.intensity = 0.42;
+    rimLight.visible = true;
   } else {
-    ambientLight.intensity = 0.92;
+    ambientLight.intensity = 1.15;
+    hemisphereLight.intensity = 0.18;
     sunLight.intensity = 0;
     sunLight.visible = false;
     sunLight.castShadow = false;
+    fillLight.intensity = 0;
+    fillLight.visible = false;
+    rimLight.intensity = 0;
+    rimLight.visible = false;
   }
 }
 
