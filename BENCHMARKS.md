@@ -125,8 +125,9 @@ OR-PP-ST-RRT baseline runs `prioritized` under outer OR parallelism with
 from that worker's distinct OR planning seed. Use
 `--or-pp-strrt-worker-counts` to override the default 16-worker paper setting,
 or `--variant-set paper-or-pp-strrt` to run only that baseline.
-Conflict-detection ablation helpers are available as `paper-horizon-ablation`
-and `paper-assignment-ablation`.
+The conflict-detection horizon ablation is available as
+`paper-horizon-ablation`. Parallel conflict detection always distributes the
+pair frontier uniformly among workers in round-robin order.
 
 The optimistic-conflict batching ablation runs full P-ARC planning trials on
 the 8-robot Panda Cage benchmark and preserves per-trial metrics JSON so
@@ -140,9 +141,16 @@ python3 benchmarks/scripts/run_parallel_arc_optimistic_ablation.py \
   --jobs 1
 ```
 
-This writes `optimistic_conflict_ablation_summary.csv` with planning time,
-conflict-detection wall/CPU time, conflict-detection fraction of total runtime,
-and conflict-round batch-size diagnostics.
+Without `--allow-nonpaper-matrix`, this runner enforces the exact Table III
+matrix: five tasks, ten seeds per task, both batch modes, and a 100-second
+timeout (100 trials total). It refuses to summarize an incomplete matrix.
+`optimistic_conflict_ablation_summary.csv` reports arithmetic means for both
+successful trials and all trials; failed trials count as 100-second runtimes,
+matching the paper. It also reports average batch size and average first-batch
+size. Use `--allow-nonpaper-matrix` only for explicitly partial diagnostics.
+The historical `parallel_arc_optimistic_ablation_20260720_163149` bundle
+covers tasks 1–4 only and should be treated as a partial diagnostic, not as the
+Table III source.
 
 ## Case Catalog
 

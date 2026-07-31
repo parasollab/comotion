@@ -519,16 +519,6 @@ bool testIndependentOnlyRejectsOptimisticConflictChain() {
                           std::vector<int>({0, 1}));
 }
 
-std::vector<std::pair<comotion::ConflictFindParallelAssignment, const char *>>
-assignmentModes() {
-    return {
-        {comotion::ConflictFindParallelAssignment::Auto, "auto"},
-        {comotion::ConflictFindParallelAssignment::PairCover, "pair-cover"},
-        {comotion::ConflictFindParallelAssignment::AllRobotsRoundRobin,
-         "all-robots-round-robin"},
-    };
-}
-
 bool testSegmentParallelFindConflictsMatchesSequential() {
     constexpr std::size_t kLength = 32;
     std::vector<std::shared_ptr<comotion::RobotModel>> robots;
@@ -585,41 +575,38 @@ bool testSegmentParallelFindConflictsMatchesSequential() {
         else if (workers == 4)
             expected = &sequential_four;
 
-        for (const auto &[assignment, assignment_name] : assignmentModes()) {
-            comotion::CompositePathValidationOptions parallel_options =
-                sequential_options;
-            parallel_options.conflict_find_parallel_workers = workers;
-            parallel_options.conflict_find_parallel_horizon = horizon;
-            parallel_options.conflict_find_parallel_assignment = assignment;
-            std::vector<std::size_t> next_t_begin_by_pair;
-            const auto parallel_conflicts = checker.findConflicts(
-                paths, ptrs, parallel_options, 0, workers, true, expand, nullptr,
-                &next_t_begin_by_pair);
-            const std::string label =
-                "segment-parallel " + std::string(assignment_name) + " N=" +
-                std::to_string(workers) + " matches sequential";
-            if (!expectTrue(label.c_str(),
-                            sameConflicts(*expected, parallel_conflicts))) {
+        comotion::CompositePathValidationOptions parallel_options =
+            sequential_options;
+        parallel_options.conflict_find_parallel_workers = workers;
+        parallel_options.conflict_find_parallel_horizon = horizon;
+        std::vector<std::size_t> next_t_begin_by_pair;
+        const auto parallel_conflicts = checker.findConflicts(
+            paths, ptrs, parallel_options, 0, workers, true, expand, nullptr,
+            &next_t_begin_by_pair);
+        const std::string label = "segment-parallel N=" +
+                                  std::to_string(workers) +
+                                  " matches sequential";
+        if (!expectTrue(label.c_str(),
+                        sameConflicts(*expected, parallel_conflicts))) {
+            return false;
+        }
+        if (!expectTrue("segment-parallel next pair progress size",
+                        next_t_begin_by_pair.size() ==
+                            comotion::pairFrontierSize(paths.size()))) {
+            return false;
+        }
+        if (horizon > 8) {
+            if (!expectTrue(
+                    "segment-parallel claimed pair does not advance past claim",
+                    next_t_begin_by_pair[comotion::pairFrontierIndex(
+                        4, 5, paths.size())] <= 5)) {
                 return false;
             }
-            if (!expectTrue("segment-parallel next pair progress size",
-                            next_t_begin_by_pair.size() ==
-                                comotion::pairFrontierSize(paths.size()))) {
+            if (!expectTrue(
+                    "segment-parallel raw later conflict frontier is preserved",
+                    next_t_begin_by_pair[comotion::pairFrontierIndex(
+                        6, 7, paths.size())] <= 9)) {
                 return false;
-            }
-            if (horizon > 8) {
-                if (!expectTrue(
-                        "segment-parallel claimed pair does not advance past claim",
-                        next_t_begin_by_pair[comotion::pairFrontierIndex(
-                            4, 5, paths.size())] <= 5)) {
-                    return false;
-                }
-                if (!expectTrue(
-                        "segment-parallel raw later conflict frontier is preserved",
-                        next_t_begin_by_pair[comotion::pairFrontierIndex(
-                            6, 7, paths.size())] <= 9)) {
-                    return false;
-                }
             }
         }
     }
@@ -707,41 +694,38 @@ bool testFclSegmentParallelFindConflictsMatchesSequential() {
         else if (workers == 4)
             expected = &sequential_four;
 
-        for (const auto &[assignment, assignment_name] : assignmentModes()) {
-            comotion::CompositePathValidationOptions parallel_options =
-                sequential_options;
-            parallel_options.conflict_find_parallel_workers = workers;
-            parallel_options.conflict_find_parallel_horizon = horizon;
-            parallel_options.conflict_find_parallel_assignment = assignment;
-            std::vector<std::size_t> next_t_begin_by_pair;
-            const auto parallel_conflicts = checker.findConflicts(
-                paths, ptrs, parallel_options, 0, workers, true, expand, nullptr,
-                &next_t_begin_by_pair);
-            const std::string label =
-                "FCL segment-parallel " + std::string(assignment_name) +
-                " N=" + std::to_string(workers) + " matches sequential";
-            if (!expectTrue(label.c_str(),
-                            sameConflicts(*expected, parallel_conflicts))) {
+        comotion::CompositePathValidationOptions parallel_options =
+            sequential_options;
+        parallel_options.conflict_find_parallel_workers = workers;
+        parallel_options.conflict_find_parallel_horizon = horizon;
+        std::vector<std::size_t> next_t_begin_by_pair;
+        const auto parallel_conflicts = checker.findConflicts(
+            paths, ptrs, parallel_options, 0, workers, true, expand, nullptr,
+            &next_t_begin_by_pair);
+        const std::string label = "FCL segment-parallel N=" +
+                                  std::to_string(workers) +
+                                  " matches sequential";
+        if (!expectTrue(label.c_str(),
+                        sameConflicts(*expected, parallel_conflicts))) {
+            return false;
+        }
+        if (!expectTrue("FCL segment-parallel next pair progress size",
+                        next_t_begin_by_pair.size() ==
+                            comotion::pairFrontierSize(paths.size()))) {
+            return false;
+        }
+        if (horizon > 8) {
+            if (!expectTrue(
+                    "FCL segment-parallel claimed pair does not advance past claim",
+                    next_t_begin_by_pair[comotion::pairFrontierIndex(
+                        4, 5, paths.size())] <= 5)) {
                 return false;
             }
-            if (!expectTrue("FCL segment-parallel next pair progress size",
-                            next_t_begin_by_pair.size() ==
-                                comotion::pairFrontierSize(paths.size()))) {
+            if (!expectTrue(
+                    "FCL segment-parallel raw later conflict frontier is preserved",
+                    next_t_begin_by_pair[comotion::pairFrontierIndex(
+                        6, 7, paths.size())] <= 9)) {
                 return false;
-            }
-            if (horizon > 8) {
-                if (!expectTrue(
-                        "FCL segment-parallel claimed pair does not advance past claim",
-                        next_t_begin_by_pair[comotion::pairFrontierIndex(
-                            4, 5, paths.size())] <= 5)) {
-                    return false;
-                }
-                if (!expectTrue(
-                        "FCL segment-parallel raw later conflict frontier is preserved",
-                        next_t_begin_by_pair[comotion::pairFrontierIndex(
-                            6, 7, paths.size())] <= 9)) {
-                    return false;
-                }
             }
         }
     }
@@ -913,35 +897,32 @@ bool testVampSegmentParallelFindConflictsMatchesSequential() {
          std::vector<std::pair<std::size_t, std::size_t>>{
              {2, 4}, {4, 16}}) {
         const auto *expected = workers == 2 ? &sequential_two : &sequential_four;
-        for (const auto &[assignment, assignment_name] : assignmentModes()) {
-            comotion::CompositePathValidationOptions parallel_options =
-                sequential_options;
-            parallel_options.conflict_find_parallel_workers = workers;
-            parallel_options.conflict_find_parallel_horizon = horizon;
-            parallel_options.conflict_find_parallel_assignment = assignment;
-            std::vector<std::size_t> next_t_begin_by_pair;
-            const auto parallel_conflicts = checker.findConflicts(
-                paths, ptrs, parallel_options, 0, workers, true, expand, nullptr,
-                &next_t_begin_by_pair);
-            const std::string label =
-                "VAMP segment-parallel " + std::string(assignment_name) +
-                " N=" + std::to_string(workers) + " matches sequential";
-            if (!expectTrue(label.c_str(),
-                            sameConflicts(*expected, parallel_conflicts))) {
-                return false;
-            }
-            if (!expectTrue("VAMP segment-parallel next pair progress size",
-                            next_t_begin_by_pair.size() ==
-                                comotion::pairFrontierSize(paths.size()))) {
-                return false;
-            }
-            if (horizon > 8 &&
-                !expectTrue(
-                    "VAMP segment-parallel raw later conflict frontier preserved",
-                    next_t_begin_by_pair[comotion::pairFrontierIndex(
-                        6, 7, paths.size())] <= 9)) {
-                return false;
-            }
+        comotion::CompositePathValidationOptions parallel_options =
+            sequential_options;
+        parallel_options.conflict_find_parallel_workers = workers;
+        parallel_options.conflict_find_parallel_horizon = horizon;
+        std::vector<std::size_t> next_t_begin_by_pair;
+        const auto parallel_conflicts = checker.findConflicts(
+            paths, ptrs, parallel_options, 0, workers, true, expand, nullptr,
+            &next_t_begin_by_pair);
+        const std::string label = "VAMP segment-parallel N=" +
+                                  std::to_string(workers) +
+                                  " matches sequential";
+        if (!expectTrue(label.c_str(),
+                        sameConflicts(*expected, parallel_conflicts))) {
+            return false;
+        }
+        if (!expectTrue("VAMP segment-parallel next pair progress size",
+                        next_t_begin_by_pair.size() ==
+                            comotion::pairFrontierSize(paths.size()))) {
+            return false;
+        }
+        if (horizon > 8 &&
+            !expectTrue(
+                "VAMP segment-parallel raw later conflict frontier preserved",
+                next_t_begin_by_pair[comotion::pairFrontierIndex(
+                    6, 7, paths.size())] <= 9)) {
+            return false;
         }
     }
 

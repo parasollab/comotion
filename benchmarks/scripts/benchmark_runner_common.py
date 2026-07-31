@@ -631,8 +631,6 @@ def paper_conflict_horizon_variants() -> list[PlannerVariant]:
                 "--parallel-arc-worker-processes",
                 str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
                 "--parallel-arc-initial-solution-or",
-                "--parallel-arc-conflict-find-assignment",
-                "pair_cover",
                 "--parallel-arc-conflict-find-horizon",
                 str(horizon),
                 "--parallel-arc-conflict-ablation-only",
@@ -642,44 +640,11 @@ def paper_conflict_horizon_variants() -> list[PlannerVariant]:
     ]
 
 
-def paper_conflict_assignment_variants() -> list[PlannerVariant]:
-    return [
-        PlannerVariant(
-            label="P-ARC-16-all-robots",
-            algorithm="parallel_arc",
-            slug="p_arc_16_all_robots",
-            extra_args=(
-                "--parallel-arc-worker-processes",
-                str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
-                "--parallel-arc-initial-solution-or",
-                "--parallel-arc-conflict-find-assignment",
-                "all_robots_round_robin",
-                "--parallel-arc-conflict-ablation-only",
-            ),
-        ),
-        PlannerVariant(
-            label="P-ARC-16-pair-cover",
-            algorithm="parallel_arc",
-            slug="p_arc_16_pair_cover",
-            extra_args=(
-                "--parallel-arc-worker-processes",
-                str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
-                "--parallel-arc-initial-solution-or",
-                "--parallel-arc-conflict-find-assignment",
-                "pair_cover",
-                "--parallel-arc-conflict-ablation-only",
-            ),
-        ),
-    ]
-
-
 def paper_optimistic_conflict_ablation_variants() -> list[PlannerVariant]:
     base_args = (
         "--parallel-arc-worker-processes",
         str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
         "--parallel-arc-initial-solution-or",
-        "--parallel-arc-conflict-find-assignment",
-        "pair_cover",
     )
     return [
         PlannerVariant(

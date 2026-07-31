@@ -196,16 +196,13 @@ bool testParallelArcSolvesIndependentConflicts() {
         return false;
     }
     if (!expectTrue(
-            "ParallelARC default conflict finder assignment strategy",
-            planner_json
-                .value("parallel_arc_conflict_find_assignment_strategy", "")
-                == "round_robin_pairs")) {
-        return false;
-    }
-    if (!expectTrue(
-            "ParallelARC default conflict finder logical buckets",
-            planner_json.value(
-                "parallel_arc_conflict_find_logical_bucket_count", 0) == 2)) {
+            "ParallelARC omits fixed conflict assignment metadata",
+            !planner_json.contains(
+                "parallel_arc_conflict_find_assignment_setting") &&
+                !planner_json.contains(
+                    "parallel_arc_conflict_find_assignment_strategy") &&
+                !planner_json.contains(
+                    "parallel_arc_conflict_find_logical_bucket_count"))) {
         return false;
     }
     if (!expectTrue("ParallelARC default optimistic conflict batch mode",
@@ -586,22 +583,12 @@ bool testParallelArcSegmentParallelConflictFindSolves() {
                                "") == "per_find_call")) {
         return false;
     }
-    if (!expectTrue(
-            "ParallelARC segment-parallel stats assignment strategy",
-            planner_json.value(
-                "parallel_arc_conflict_find_assignment_strategy", "") ==
-                "round_robin_pairs")) {
-        return false;
-    }
     if (!expectTrue("ParallelARC segment-parallel stats conflict batch mode",
                     planner_json.value("parallel_arc_conflict_batch_mode",
                                        "") == "independent_only")) {
         return false;
     }
-    return expectTrue(
-        "ParallelARC segment-parallel stats logical bucket count",
-        planner_json.value("parallel_arc_conflict_find_logical_bucket_count",
-                           0) == 2);
+    return true;
 }
 
 bool testParallelArcVampSegmentParallelConflictFindSolves() {

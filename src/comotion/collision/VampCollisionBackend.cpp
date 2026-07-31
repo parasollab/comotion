@@ -1,7 +1,6 @@
 #include "comotion/collision/detail/CollisionBackend.h"
 #include "comotion/collision/detail/VampPackingUtils.h"
 #include "comotion/collision/detail/ValidationUtils.h"
-#include "comotion/utils/pair_covering_design.h"
 
 #include <algorithm>
 #include <array>
@@ -2025,8 +2024,6 @@ private:
         const bool optimistic_unique =
             options.inter_robot_conflict_batch_mode ==
             InterRobotConflictBatchMode::OptimisticIndependent;
-        const bool use_pair_cover_assignment = usePairCoverConflictAssignment(
-            options.conflict_find_parallel_assignment, worker_count);
         constexpr std::size_t kInvalidRobotSlot =
             std::numeric_limits<std::size_t>::max();
         std::vector<std::vector<WorkPair>> worker_pairs(worker_count);
@@ -2035,43 +2032,21 @@ private:
             worker_count,
             std::vector<std::size_t>(paths.size(), kInvalidRobotSlot));
 
-        if (use_pair_cover_assignment) {
-            const auto assignment = pairCoverConflictAssignment(
-                static_cast<int>(paths.size()),
-                static_cast<int>(worker_count));
-            for (std::size_t worker = 0; worker < worker_count; ++worker) {
-                worker_robots[worker].reserve(
-                    assignment.worker_robots[worker].size());
-                for (const int robot : assignment.worker_robots[worker]) {
-                    const auto robot_index = static_cast<std::size_t>(robot);
-                    worker_robot_slots[worker][robot_index] =
-                        worker_robots[worker].size();
-                    worker_robots[worker].push_back(robot_index);
-                }
-                for (const auto &pair : assignment.worker_pairs[worker]) {
-                    const std::size_t i = static_cast<std::size_t>(pair.first);
-                    const std::size_t j = static_cast<std::size_t>(pair.second);
-                    const std::size_t pair_index =
-                        pairFrontierIndex(i, j, paths.size());
-                    worker_pairs[worker].push_back(WorkPair{i, j, pair_index});
-                }
+        for (std::size_t worker = 0; worker < worker_count; ++worker) {
+            worker_robots[worker].reserve(paths.size());
+            for (std::size_t robot = 0; robot < paths.size(); ++robot) {
+                worker_robot_slots[worker][robot] =
+                    worker_robots[worker].size();
+                worker_robots[worker].push_back(robot);
             }
-        } else {
-            for (std::size_t worker = 0; worker < worker_count; ++worker) {
-                worker_robots[worker].reserve(paths.size());
-                for (std::size_t robot = 0; robot < paths.size(); ++robot) {
-                    worker_robot_slots[worker][robot] =
-                        worker_robots[worker].size();
-                    worker_robots[worker].push_back(robot);
-                }
-            }
-            for (std::size_t i = 0; i < paths.size(); ++i) {
-                for (std::size_t j = i + 1; j < paths.size(); ++j) {
-                    const std::size_t pair_index =
-                        pairFrontierIndex(i, j, paths.size());
-                    worker_pairs[pair_index % worker_count].push_back(
-                        WorkPair{i, j, pair_index});
-                }
+        }
+        // Distribute the pair frontier uniformly in round-robin order.
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            for (std::size_t j = i + 1; j < paths.size(); ++j) {
+                const std::size_t pair_index =
+                    pairFrontierIndex(i, j, paths.size());
+                worker_pairs[pair_index % worker_count].push_back(
+                    WorkPair{i, j, pair_index});
             }
         }
 

@@ -13,11 +13,6 @@ enum class ConflictKind { Vertex };
 enum class ConflictScope { Environment, Self, InterRobot };
 enum class VampBatchOrdering { Combined, Hierarchical };
 enum class VampBatchPacking { Rake, Linear };
-enum class ConflictFindParallelAssignment {
-    Auto,
-    PairCover,
-    AllRobotsRoundRobin,
-};
 enum class InterRobotConflictBatchMode {
     OptimisticIndependent,
     IndependentOnly,
@@ -141,8 +136,6 @@ struct CompositePathValidationOptions {
     std::vector<std::size_t> per_pair_t_begin;
     std::size_t conflict_find_parallel_workers = 1;
     std::size_t conflict_find_parallel_horizon = 0;
-    ConflictFindParallelAssignment conflict_find_parallel_assignment =
-        ConflictFindParallelAssignment::Auto;
     InterRobotConflictBatchMode inter_robot_conflict_batch_mode =
         InterRobotConflictBatchMode::OptimisticIndependent;
     std::function<bool()> stop_requested;
@@ -151,19 +144,6 @@ struct CompositePathValidationOptions {
     TemporaryConflictFindInstrumentation *temporary_conflict_find_instrumentation =
         nullptr;
 };
-
-inline bool usePairCoverConflictAssignment(
-    ConflictFindParallelAssignment assignment, std::size_t worker_count) {
-    switch (assignment) {
-    case ConflictFindParallelAssignment::Auto:
-        return worker_count == 4 || worker_count == 8 || worker_count == 16;
-    case ConflictFindParallelAssignment::PairCover:
-        return true;
-    case ConflictFindParallelAssignment::AllRobotsRoundRobin:
-        return false;
-    }
-    return false;
-}
 
 inline std::size_t pairFrontierSize(std::size_t item_count) {
     return item_count < 2 ? 0 : item_count * (item_count - 1) / 2;

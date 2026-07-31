@@ -54,8 +54,6 @@ int main() {
         comotion::CollisionChecker::Backend::Spheres);
     comotion::ConflictChecker conflict_checker(checker);
     comotion::CompositePathValidationOptions validation_options;
-    validation_options.conflict_find_parallel_assignment =
-        comotion::ConflictFindParallelAssignment::Auto;
 
     comotion::Path path;
     path.push_back({-0.5, 0.0, 0.0});

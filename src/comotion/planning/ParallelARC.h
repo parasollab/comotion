@@ -45,10 +45,6 @@ public:
     void setConflictFindHorizon(std::size_t horizon) {
         conflict_find_horizon_ = horizon;
     }
-    void setConflictFindAssignment(
-        ConflictFindParallelAssignment assignment) {
-        conflict_find_assignment_ = assignment;
-    }
     void setConflictBatchMode(InterRobotConflictBatchMode mode) {
         conflict_batch_mode_ = mode;
     }
@@ -141,8 +137,6 @@ private:
     ParallelArcConflictFindMode conflict_find_mode_ =
         ParallelArcConflictFindMode::SegmentParallel;
     std::size_t conflict_find_horizon_ = 400;
-    ConflictFindParallelAssignment conflict_find_assignment_ =
-        ConflictFindParallelAssignment::Auto;
     InterRobotConflictBatchMode conflict_batch_mode_ =
         InterRobotConflictBatchMode::OptimisticIndependent;
     bool repair_duplicate_attempts_ = true;

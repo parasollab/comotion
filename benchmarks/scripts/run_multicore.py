@@ -16,7 +16,6 @@ from benchmark_runner_common import (
     build_trial_specs,
     finish_outputs,
     multicore_variants,
-    paper_conflict_assignment_variants,
     paper_conflict_horizon_variants,
     paper_optimistic_conflict_ablation_variants,
     paper_or_pp_strrt_baseline_variants,
@@ -45,7 +44,6 @@ def parse_args() -> argparse.Namespace:
             "paper-arc",
             "paper-full",
             "paper-horizon-ablation",
-            "paper-assignment-ablation",
             "paper-optimistic-conflict-ablation",
             "paper-or-pp-strrt",
         ),
@@ -144,8 +142,6 @@ def main() -> int:
         )
     elif args.variant_set == "paper-horizon-ablation":
         variants = paper_conflict_horizon_variants()
-    elif args.variant_set == "paper-assignment-ablation":
-        variants = paper_conflict_assignment_variants()
     elif args.variant_set == "paper-optimistic-conflict-ablation":
         variants = paper_optimistic_conflict_ablation_variants()
     elif args.variant_set == "paper-or-pp-strrt":

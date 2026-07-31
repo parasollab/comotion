@@ -50,7 +50,6 @@ The following headers are intentionally not installed:
 - `CooperativeCompositeRRT`
 - `MakespanCompositeStateSpace`
 - `MakespanInformedSampler`
-- `pair_covering_design`
 - Any header under a `detail/` directory
 
 Source-only internals may still be used by CoMotion's own apps, benchmarks, and

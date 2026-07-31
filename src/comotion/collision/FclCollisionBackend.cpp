@@ -1,6 +1,5 @@
 #include "comotion/collision/detail/CollisionBackend.h"
 #include "comotion/collision/detail/ValidationUtils.h"
-#include "comotion/utils/pair_covering_design.h"
 
 #include <fcl/geometry/bvh/BVH_model.h>
 #include <fcl/geometry/shape/box.h>
@@ -1390,31 +1389,15 @@ private:
         const bool optimistic_unique =
             options.inter_robot_conflict_batch_mode ==
             InterRobotConflictBatchMode::OptimisticIndependent;
-        const bool use_pair_cover_assignment = usePairCoverConflictAssignment(
-            options.conflict_find_parallel_assignment, worker_count);
         std::vector<std::vector<WorkPair>> worker_pairs(worker_count);
 
-        if (use_pair_cover_assignment) {
-            const auto assignment = pairCoverConflictAssignment(
-                static_cast<int>(paths.size()),
-                static_cast<int>(worker_count));
-            for (std::size_t worker = 0; worker < worker_count; ++worker) {
-                for (const auto &pair : assignment.worker_pairs[worker]) {
-                    const std::size_t i = static_cast<std::size_t>(pair.first);
-                    const std::size_t j = static_cast<std::size_t>(pair.second);
-                    const std::size_t pair_index =
-                        pairFrontierIndex(i, j, paths.size());
-                    worker_pairs[worker].push_back(WorkPair{i, j, pair_index});
-                }
-            }
-        } else {
-            for (std::size_t i = 0; i < paths.size(); ++i) {
-                for (std::size_t j = i + 1; j < paths.size(); ++j) {
-                    const std::size_t pair_index =
-                        pairFrontierIndex(i, j, paths.size());
-                    worker_pairs[pair_index % worker_count].push_back(
-                        WorkPair{i, j, pair_index});
-                }
+        // Distribute the pair frontier uniformly in round-robin order.
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            for (std::size_t j = i + 1; j < paths.size(); ++j) {
+                const std::size_t pair_index =
+                    pairFrontierIndex(i, j, paths.size());
+                worker_pairs[pair_index % worker_count].push_back(
+                    WorkPair{i, j, pair_index});
             }
         }
 

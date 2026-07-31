@@ -112,7 +112,6 @@ struct AppOptions {
     std::string parallel_arc_strategy = "synchronous";
     std::string parallel_arc_conflict_strategy = "greedy";
     std::string parallel_arc_conflict_find_mode = "segment_parallel";
-    std::string parallel_arc_conflict_find_assignment = "auto";
     std::string parallel_arc_conflict_batch_mode = "optimistic";
     std::size_t parallel_arc_conflict_find_horizon = 200;
     bool parallel_arc_conflict_ablation_only = false;
@@ -998,7 +997,6 @@ void printUsage(const char *prog) {
         << "  --parallel-arc-strategy <synchronous|asynchronous>\n"
         << "  --parallel-arc-conflict-strategy <greedy|spatial_distribution>\n"
         << "  --parallel-arc-conflict-find-mode <sequential|segment_parallel>\n"
-        << "  --parallel-arc-conflict-find-assignment <auto|pair_cover|all_robots_round_robin>\n"
         << "  --parallel-arc-conflict-batch-mode <optimistic|independent_only>\n"
         << "  --parallel-arc-conflict-find-horizon <n>\n"
         << "  --parallel-arc-conflict-ablation-only\n"
@@ -1173,9 +1171,6 @@ AppOptions parseArgs(int argc, char **argv) {
                 requireValue(i, argc, argv, arg);
         } else if (arg == "--parallel-arc-conflict-find-mode") {
             options.parallel_arc_conflict_find_mode =
-                requireValue(i, argc, argv, arg);
-        } else if (arg == "--parallel-arc-conflict-find-assignment") {
-            options.parallel_arc_conflict_find_assignment =
                 requireValue(i, argc, argv, arg);
         } else if (arg == "--parallel-arc-conflict-batch-mode") {
             options.parallel_arc_conflict_batch_mode =

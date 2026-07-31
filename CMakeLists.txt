@@ -99,12 +99,6 @@ if(COMOTION_BUILD_TESTS)
     target_link_libraries(path_timestep_semantics PRIVATE comotion)
     add_test(NAME path_timestep_semantics COMMAND path_timestep_semantics)
 
-    add_executable(pair_covering_design_regression
-        tests/pair_covering_design_regression.cpp)
-    target_link_libraries(pair_covering_design_regression PRIVATE comotion)
-    add_test(NAME pair_covering_design_regression
-             COMMAND pair_covering_design_regression)
-
     add_executable(mobile_robot_2d_crossing_geometry
         benchmarks/tests/mobile_robot_2d_crossing_geometry.cpp)
     target_include_directories(mobile_robot_2d_crossing_geometry PRIVATE

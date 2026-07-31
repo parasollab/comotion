@@ -176,23 +176,6 @@ inline bool parseBoolValue(const std::string &value) {
     throw std::runtime_error("Expected boolean value, got: " + value);
 }
 
-inline comotion::ConflictFindParallelAssignment
-parseParallelArcConflictFindAssignment(const std::string &value) {
-    const std::string lowered = lowerAscii(value);
-    if (lowered == "auto")
-        return comotion::ConflictFindParallelAssignment::Auto;
-    if (lowered == "pair_cover" || lowered == "pair-cover" ||
-        lowered == "pair_covering" || lowered == "pair-covering")
-        return comotion::ConflictFindParallelAssignment::PairCover;
-    if (lowered == "all_robots_round_robin" ||
-        lowered == "all-robots-round-robin" ||
-        lowered == "all_robots" || lowered == "all-robots" ||
-        lowered == "round_robin" || lowered == "round-robin")
-        return comotion::ConflictFindParallelAssignment::AllRobotsRoundRobin;
-    throw std::runtime_error(
-        "Unknown ParallelARC conflict-find assignment: " + value);
-}
-
 inline comotion::InterRobotConflictBatchMode
 parseParallelArcConflictBatchMode(const std::string &value) {
     const std::string lowered = lowerAscii(value);
@@ -642,9 +625,6 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
             }
             planner->setConflictFindHorizon(
                 options.parallel_arc_conflict_find_horizon);
-            planner->setConflictFindAssignment(
-                parseParallelArcConflictFindAssignment(
-                    options.parallel_arc_conflict_find_assignment));
             planner->setConflictBatchMode(parseParallelArcConflictBatchMode(
                 parallelArcConflictBatchModeValue(options)));
             return planner;

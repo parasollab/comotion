@@ -175,35 +175,6 @@ const char *parallelArcConflictFindModeStr(
     return "unknown";
 }
 
-const char *parallelArcConflictFindAssignmentStr(
-    comotion::ConflictFindParallelAssignment assignment,
-    std::size_t worker_count) {
-    switch (assignment) {
-    case comotion::ConflictFindParallelAssignment::Auto:
-        return comotion::usePairCoverConflictAssignment(assignment, worker_count)
-                   ? "pair_cover_buckets"
-                   : "round_robin_pairs";
-    case comotion::ConflictFindParallelAssignment::PairCover:
-        return "pair_cover_buckets";
-    case comotion::ConflictFindParallelAssignment::AllRobotsRoundRobin:
-        return "round_robin_pairs";
-    }
-    return "unknown";
-}
-
-const char *parallelArcConflictFindAssignmentSettingStr(
-    comotion::ConflictFindParallelAssignment assignment) {
-    switch (assignment) {
-    case comotion::ConflictFindParallelAssignment::Auto:
-        return "auto";
-    case comotion::ConflictFindParallelAssignment::PairCover:
-        return "pair_cover";
-    case comotion::ConflictFindParallelAssignment::AllRobotsRoundRobin:
-        return "all_robots_round_robin";
-    }
-    return "unknown";
-}
-
 const char *parallelArcConflictBatchModeStr(
     comotion::InterRobotConflictBatchMode mode) {
     switch (mode) {
@@ -1223,19 +1194,8 @@ void ParallelARC::finalizeParallelArcPlannerStats(
         conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
             ? "per_find_call"
             : "";
-    stats["parallel_arc_conflict_find_assignment_setting"] =
-        parallelArcConflictFindAssignmentSettingStr(conflict_find_assignment_);
-    stats["parallel_arc_conflict_find_assignment_strategy"] =
-        conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
-            ? parallelArcConflictFindAssignmentStr(conflict_find_assignment_,
-                                                  worker_processes_)
-            : "";
     stats["parallel_arc_conflict_batch_mode"] =
         parallelArcConflictBatchModeStr(conflict_batch_mode_);
-    stats["parallel_arc_conflict_find_logical_bucket_count"] =
-        conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
-            ? worker_processes_
-            : 0;
     stats["parallel_arc_repair_parallelism"] = worker_processes_ > 1;
     stats["parallel_arc_repair_or_parallelism"] =
         worker_processes_ > 1 && repair_duplicate_attempts_;
@@ -1411,8 +1371,6 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             ParallelArcConflictFindMode::SegmentParallel) {
             options.conflict_find_parallel_workers = effective_workers;
             options.conflict_find_parallel_horizon = conflict_find_horizon_;
-            options.conflict_find_parallel_assignment =
-                conflict_find_assignment_;
         }
         ConflictChecker conflict_checker(problem_->collisionChecker());
         std::vector<std::size_t> next_t_begin_by_pair;
@@ -2709,7 +2667,6 @@ bool ParallelARC::runConflictDetectionAblation(double timeLimit) {
     if (conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel) {
         options.conflict_find_parallel_workers = effective_workers;
         options.conflict_find_parallel_horizon = conflict_find_horizon_;
-        options.conflict_find_parallel_assignment = conflict_find_assignment_;
     }
     ConflictChecker conflict_checker(problem_->collisionChecker());
     std::vector<std::size_t> next_t_begin_by_pair;
