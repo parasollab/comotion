@@ -22,6 +22,7 @@ enum class ParallelArcConflictFindMode { Sequential, SegmentParallel };
 class ParallelARC : public ARC {
 public:
     ompl::base::PlannerStatus solve(double timeLimit) override;
+    bool runConflictDetectionAblation(double timeLimit);
     std::string name() const override { return "ParallelARC"; }
 
     void setWorkerProcesses(unsigned n) { worker_processes_ = n; }
@@ -47,6 +48,9 @@ public:
     void setConflictFindAssignment(
         ConflictFindParallelAssignment assignment) {
         conflict_find_assignment_ = assignment;
+    }
+    void setConflictBatchMode(InterRobotConflictBatchMode mode) {
+        conflict_batch_mode_ = mode;
     }
     void setRepairDuplicateAttempts(bool enabled) {
         repair_duplicate_attempts_ = enabled;
@@ -91,6 +95,11 @@ protected:
     void printConflictRoundStats(std::ostream &os) const;
 
 private:
+    void resetParallelArcRunState();
+    void finalizeParallelArcPlannerStats(
+        const ArcPlannerStatsSummary &planner_stats_summary,
+        const nlohmann::json &repair_failure_snapshot);
+
     struct InitialIndividualWorkerStats {
         int worker_index = -1;
         std::vector<int> robots;
@@ -134,6 +143,8 @@ private:
     std::size_t conflict_find_horizon_ = 400;
     ConflictFindParallelAssignment conflict_find_assignment_ =
         ConflictFindParallelAssignment::Auto;
+    InterRobotConflictBatchMode conflict_batch_mode_ =
+        InterRobotConflictBatchMode::OptimisticIndependent;
     bool repair_duplicate_attempts_ = true;
     std::vector<ConflictRoundStats> conflict_round_stats_;
 };

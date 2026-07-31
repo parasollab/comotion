@@ -23,6 +23,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <set>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -60,6 +63,11 @@ double elapsedProcessCpuSeconds(double start) {
 
 std::uint64_t processCpuElapsedNanoseconds(double start) {
     return static_cast<std::uint64_t>(elapsedProcessCpuSeconds(start) * 1e9);
+}
+
+double timevalSeconds(const timeval &value) {
+    return static_cast<double>(value.tv_sec) +
+           static_cast<double>(value.tv_usec) * 1e-6;
 }
 
 const char *arcLocalSolverModeStr(comotion::ARC::LocalSolverMode mode) {
@@ -133,6 +141,16 @@ void ARC::resetArcSolveState() {
     local_composite_simplification_times_seconds_wall_clock_ = 0.0;
     conflict_detection_times_seconds_.clear();
     conflict_detection_times_cpu_seconds_.clear();
+    temporary_conflict_find_main_process_wall_seconds_.clear();
+    temporary_conflict_find_process_tree_cpu_seconds_.clear();
+    temporary_conflict_find_build_worker_wall_seconds_.clear();
+    temporary_conflict_find_build_worker_cpu_seconds_.clear();
+    temporary_conflict_find_collision_worker_wall_seconds_.clear();
+    temporary_conflict_find_collision_worker_cpu_seconds_.clear();
+    temporary_conflict_find_critical_worker_index_.clear();
+    temporary_conflict_find_critical_worker_build_wall_seconds_.clear();
+    temporary_conflict_find_critical_worker_collision_wall_seconds_.clear();
+    temporary_conflict_find_critical_worker_total_wall_seconds_.clear();
     conflict_resolution_times_seconds_.clear();
     conflict_resolution_times_cpu_seconds_.clear();
 }
@@ -1158,6 +1176,82 @@ nlohmann::json ARC::plannerStatsJsonFromSummary(
     return stats;
 }
 
+ARC::ProcessTreeCpuUsageSnapshot ARC::processTreeCpuUsageSnapshot() {
+    ProcessTreeCpuUsageSnapshot snapshot;
+#if !defined(_WIN32)
+    rusage self_usage {};
+    if (::getrusage(RUSAGE_SELF, &self_usage) == 0) {
+        snapshot.self_seconds =
+            timevalSeconds(self_usage.ru_utime) +
+            timevalSeconds(self_usage.ru_stime);
+    }
+    rusage children_usage {};
+    if (::getrusage(RUSAGE_CHILDREN, &children_usage) == 0) {
+        snapshot.children_seconds =
+            timevalSeconds(children_usage.ru_utime) +
+            timevalSeconds(children_usage.ru_stime);
+    }
+#endif
+    return snapshot;
+}
+
+double ARC::elapsedProcessTreeCpuSeconds(
+    const ProcessTreeCpuUsageSnapshot &start,
+    const ProcessTreeCpuUsageSnapshot &finish) {
+    const double elapsed =
+        (finish.self_seconds - start.self_seconds) +
+        (finish.children_seconds - start.children_seconds);
+    return elapsed < 0.0 ? 0.0 : elapsed;
+}
+
+nlohmann::json ARC::temporaryConflictFindTimingJson(
+    const std::vector<double> &main_process_wall_seconds,
+    const std::vector<double> &process_tree_cpu_seconds,
+    const std::vector<double> &build_worker_wall_seconds,
+    const std::vector<double> &build_worker_cpu_seconds,
+    const std::vector<double> &collision_worker_wall_seconds,
+    const std::vector<double> &collision_worker_cpu_seconds,
+    const std::vector<int> &critical_worker_index,
+    const std::vector<double> &critical_worker_build_wall_seconds,
+    const std::vector<double> &critical_worker_collision_wall_seconds,
+    const std::vector<double> &critical_worker_total_wall_seconds) {
+    return {
+        {"round_count", main_process_wall_seconds.size()},
+        {"main_process_wall_seconds_total", sumSeconds(main_process_wall_seconds)},
+        {"main_process_wall_seconds_by_round", main_process_wall_seconds},
+        {"process_tree_cpu_seconds_total",
+         sumSeconds(process_tree_cpu_seconds)},
+        {"process_tree_cpu_seconds_by_round", process_tree_cpu_seconds},
+        {"build_worker_wall_seconds_total",
+         sumSeconds(build_worker_wall_seconds)},
+        {"build_worker_wall_seconds_by_round", build_worker_wall_seconds},
+        {"build_worker_cpu_seconds_total",
+         sumSeconds(build_worker_cpu_seconds)},
+        {"build_worker_cpu_seconds_by_round", build_worker_cpu_seconds},
+        {"collision_worker_wall_seconds_total",
+         sumSeconds(collision_worker_wall_seconds)},
+        {"collision_worker_wall_seconds_by_round",
+         collision_worker_wall_seconds},
+        {"collision_worker_cpu_seconds_total",
+         sumSeconds(collision_worker_cpu_seconds)},
+        {"collision_worker_cpu_seconds_by_round",
+         collision_worker_cpu_seconds},
+        {"critical_worker_index_by_round", critical_worker_index},
+        {"critical_worker_build_wall_seconds_total",
+         sumSeconds(critical_worker_build_wall_seconds)},
+        {"critical_worker_build_wall_seconds_by_round",
+         critical_worker_build_wall_seconds},
+        {"critical_worker_collision_wall_seconds_total",
+         sumSeconds(critical_worker_collision_wall_seconds)},
+        {"critical_worker_collision_wall_seconds_by_round",
+         critical_worker_collision_wall_seconds},
+        {"critical_worker_total_wall_seconds_total",
+         sumSeconds(critical_worker_total_wall_seconds)},
+        {"critical_worker_total_wall_seconds_by_round",
+         critical_worker_total_wall_seconds},
+    };
+}
+
 std::vector<int> ARC::subproblemRobotsForConflict(int robot_i, int robot_j,
                                                   int window_start_t,
                                                   int window_end_t,
@@ -1267,6 +1361,20 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
             currentArcPlannerStatsSummary(),
             &conflict_resolution_times_seconds_,
             &conflict_detection_times_seconds_);
+        // TEMP(ablation): keep the fine-grained conflict-find timing isolated
+        // in one nested block so we can delete it cleanly after repro work.
+        stats["temporary_conflict_find_timing"] =
+            temporaryConflictFindTimingJson(
+                temporary_conflict_find_main_process_wall_seconds_,
+                temporary_conflict_find_process_tree_cpu_seconds_,
+                temporary_conflict_find_build_worker_wall_seconds_,
+                temporary_conflict_find_build_worker_cpu_seconds_,
+                temporary_conflict_find_collision_worker_wall_seconds_,
+                temporary_conflict_find_collision_worker_cpu_seconds_,
+                temporary_conflict_find_critical_worker_index_,
+                temporary_conflict_find_critical_worker_build_wall_seconds_,
+                temporary_conflict_find_critical_worker_collision_wall_seconds_,
+                temporary_conflict_find_critical_worker_total_wall_seconds_);
         stats["solution_events"] = nlohmann::json::array();
         if (exact_solution && makespanTimesteps()) {
             stats["solution_events"].push_back({
@@ -1317,6 +1425,11 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
         std::vector<std::size_t> next_t_begin_by_pair;
         const auto conflict_detection_start = Clock::now();
         const double conflict_detection_cpu_start = processCpuSeconds();
+        const auto conflict_detection_tree_cpu_start =
+            processTreeCpuUsageSnapshot();
+        TemporaryConflictFindInstrumentation temporary_conflict_find_timing;
+        options.temporary_conflict_find_instrumentation =
+            &temporary_conflict_find_timing;
         const auto conflicts = conflict_checker.findConflicts(
             solution_paths_, ptrs, options, 0, 1, true,
             [this](const Conflict &conflict) {
@@ -1324,12 +1437,35 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
             },
             nullptr, &next_t_begin_by_pair);
         applyConflictScanProgress(next_t_begin_by_pair);
-        conflict_detection_times_seconds_.push_back(
+        const double conflict_detection_wall_seconds =
             std::chrono::duration<double>(Clock::now() -
                                           conflict_detection_start)
-                .count());
+                .count();
+        conflict_detection_times_seconds_.push_back(
+            conflict_detection_wall_seconds);
         conflict_detection_times_cpu_seconds_.push_back(
             elapsedProcessCpuSeconds(conflict_detection_cpu_start));
+        temporary_conflict_find_main_process_wall_seconds_.push_back(
+            conflict_detection_wall_seconds);
+        temporary_conflict_find_process_tree_cpu_seconds_.push_back(
+            elapsedProcessTreeCpuSeconds(conflict_detection_tree_cpu_start,
+                                         processTreeCpuUsageSnapshot()));
+        temporary_conflict_find_build_worker_wall_seconds_.push_back(
+            temporary_conflict_find_timing.build_worker_wall_seconds);
+        temporary_conflict_find_build_worker_cpu_seconds_.push_back(
+            temporary_conflict_find_timing.build_worker_cpu_seconds);
+        temporary_conflict_find_collision_worker_wall_seconds_.push_back(
+            temporary_conflict_find_timing.collision_worker_wall_seconds);
+        temporary_conflict_find_collision_worker_cpu_seconds_.push_back(
+            temporary_conflict_find_timing.collision_worker_cpu_seconds);
+        temporary_conflict_find_critical_worker_index_.push_back(
+            temporary_conflict_find_timing.criticalWorkerIndex());
+        temporary_conflict_find_critical_worker_build_wall_seconds_.push_back(
+            temporary_conflict_find_timing.criticalWorkerBuildWallSeconds());
+        temporary_conflict_find_critical_worker_collision_wall_seconds_.push_back(
+            temporary_conflict_find_timing.criticalWorkerCollisionWallSeconds());
+        temporary_conflict_find_critical_worker_total_wall_seconds_.push_back(
+            temporary_conflict_find_timing.criticalWorkerTotalWallSeconds());
         elapsed = std::chrono::steady_clock::now() - start_time;
         elapsed_s = std::chrono::duration<double>(elapsed).count();
         if (elapsed_s >= timeLimit) {

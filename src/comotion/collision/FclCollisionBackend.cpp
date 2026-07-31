@@ -17,12 +17,14 @@
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cerrno>
 #include <cctype>
 #include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -42,6 +44,8 @@ namespace comotion {
 namespace detail {
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
 
 #if !defined(_WIN32)
 bool readExact(int fd, void *buffer, std::size_t bytes) {
@@ -89,6 +93,27 @@ bool writeValue(int fd, const T &value) {
     return writeExact(fd, &value, sizeof(T));
 }
 #endif
+
+double processCpuSeconds() {
+#if defined(CLOCK_PROCESS_CPUTIME_ID)
+    timespec ts {};
+    if (::clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) == 0) {
+        return static_cast<double>(ts.tv_sec) +
+               static_cast<double>(ts.tv_nsec) * 1e-9;
+    }
+#endif
+    return static_cast<double>(std::clock()) /
+           static_cast<double>(CLOCKS_PER_SEC);
+}
+
+double elapsedProcessCpuSeconds(double start) {
+    const double elapsed = processCpuSeconds() - start;
+    return elapsed < 0.0 ? 0.0 : elapsed;
+}
+
+double elapsedWallSeconds(const Clock::time_point &start) {
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
 
 using S = double;
 using Vector3 = fcl::Vector3<S>;
@@ -1205,6 +1230,10 @@ public:
         if (global_begin >= end) {
             return out;
         }
+        const bool optimistic_unique =
+            unique &&
+            options.inter_robot_conflict_batch_mode ==
+                InterRobotConflictBatchMode::OptimisticIndependent;
         std::vector<char> robot_used(paths.size(), 0);
         std::vector<char> pair_has_accepted(effective_pair_starts.size(), 0);
         std::vector<AcceptedInterRobotConflictClaim> accepted_claims;
@@ -1216,7 +1245,7 @@ public:
                         pairFrontierIndex(i, j, paths.size());
                     if (effective_pair_starts[pair_index] > t)
                         continue;
-                    if (unique && (robot_used[i] || robot_used[j]))
+                    if (optimistic_unique && (robot_used[i] || robot_used[j]))
                         continue;
                     const auto &config_i = configAt(paths[i], t);
                     const auto &config_j = configAt(paths[j], t);
@@ -1228,8 +1257,9 @@ public:
                             config_i, config_j};
                         if (acceptInterRobotConflictCandidate(
                                 conflict, on_conflict, unique, robot_used, out,
-                                accepted_claims)) {
-                            if (next_t_begin_by_pair_out &&
+                                accepted_claims,
+                                options.inter_robot_conflict_batch_mode)) {
+                            if (optimistic_unique && next_t_begin_by_pair_out &&
                                 !pair_has_accepted[pair_index]) {
                                 (*next_t_begin_by_pair_out)[pair_index] = t;
                                 pair_has_accepted[pair_index] = 1;
@@ -1244,7 +1274,7 @@ public:
                                 return out;
                             }
                         }
-                    } else if (next_t_begin_by_pair_out &&
+                    } else if (optimistic_unique && next_t_begin_by_pair_out &&
                                !pair_has_accepted[pair_index]) {
                         (*next_t_begin_by_pair_out)[pair_index] = t + 1;
                     }
@@ -1305,6 +1335,10 @@ private:
         };
         struct ProcessScanResultHeader {
             std::uint64_t candidate_count = 0;
+            double build_worker_wall_seconds = 0.0;
+            double build_worker_cpu_seconds = 0.0;
+            double collision_worker_wall_seconds = 0.0;
+            double collision_worker_cpu_seconds = 0.0;
         };
         struct ProcessWorker {
             pid_t pid = -1;
@@ -1353,53 +1387,24 @@ private:
             std::max<std::size_t>(1, options.conflict_find_parallel_workers);
         const std::size_t horizon =
             std::max<std::size_t>(1, options.conflict_find_parallel_horizon);
+        const bool optimistic_unique =
+            options.inter_robot_conflict_batch_mode ==
+            InterRobotConflictBatchMode::OptimisticIndependent;
         const bool use_pair_cover_assignment = usePairCoverConflictAssignment(
             options.conflict_find_parallel_assignment, worker_count);
         std::vector<std::vector<WorkPair>> worker_pairs(worker_count);
 
         if (use_pair_cover_assignment) {
-            const auto buckets = pairCoveringDesign(
+            const auto assignment = pairCoverConflictAssignment(
                 static_cast<int>(paths.size()),
                 static_cast<int>(worker_count));
-            std::vector<std::uint64_t> robot_bucket_masks(paths.size(), 0);
             for (std::size_t worker = 0; worker < worker_count; ++worker) {
-                for (const int robot : buckets[worker]) {
-                    const auto robot_index = static_cast<std::size_t>(robot);
-                    robot_bucket_masks[robot_index] |=
-                        std::uint64_t{1} << worker;
-                }
-            }
-
-            for (std::size_t i = 0; i < paths.size(); ++i) {
-                for (std::size_t j = i + 1; j < paths.size(); ++j) {
-                    const std::uint64_t covering_workers =
-                        robot_bucket_masks[i] & robot_bucket_masks[j];
-                    if (covering_workers == 0) {
-                        throw std::runtime_error(
-                            "FCL pair-cover conflict finder assignment did "
-                            "not cover every robot pair");
-                    }
-
-                    std::size_t best_worker = worker_count;
-                    std::size_t best_load =
-                        std::numeric_limits<std::size_t>::max();
-                    for (std::size_t worker = 0; worker < worker_count;
-                         ++worker) {
-                        if ((covering_workers &
-                             (std::uint64_t{1} << worker)) == 0) {
-                            continue;
-                        }
-                        const std::size_t load = worker_pairs[worker].size();
-                        if (load < best_load) {
-                            best_worker = worker;
-                            best_load = load;
-                        }
-                    }
-
+                for (const auto &pair : assignment.worker_pairs[worker]) {
+                    const std::size_t i = static_cast<std::size_t>(pair.first);
+                    const std::size_t j = static_cast<std::size_t>(pair.second);
                     const std::size_t pair_index =
                         pairFrontierIndex(i, j, paths.size());
-                    worker_pairs[best_worker].push_back(
-                        WorkPair{i, j, pair_index});
+                    worker_pairs[worker].push_back(WorkPair{i, j, pair_index});
                 }
             }
         } else {
@@ -1450,23 +1455,80 @@ private:
 
                 std::vector<RawConflictCandidate> raw_candidates;
                 ProcessScanResultHeader result;
+                double build_worker_wall_seconds = 0.0;
+                double build_worker_cpu_seconds = 0.0;
+                double collision_worker_wall_seconds = 0.0;
+                double collision_worker_cpu_seconds = 0.0;
                 const std::size_t segment_begin =
                     static_cast<std::size_t>(command.segment_begin);
                 const std::size_t segment_end =
                     static_cast<std::size_t>(command.segment_end);
+                const auto pairValidAtT = [&](const WorkPair &pair,
+                                              std::size_t timestep) {
+                    const auto build_wall_start = Clock::now();
+                    const double build_cpu_start = processCpuSeconds();
+                    const auto &cache_a = robotCache(*robots[pair.robot_i]);
+                    const auto &cache_b = robotCache(*robots[pair.robot_j]);
+                    const auto config_a = configAt(paths[pair.robot_i], timestep);
+                    const auto config_b = configAt(paths[pair.robot_j], timestep);
+                    if (cache_a.prims.empty() || cache_b.prims.empty()) {
+                        build_worker_wall_seconds +=
+                            elapsedWallSeconds(build_wall_start);
+                        build_worker_cpu_seconds +=
+                            elapsedProcessCpuSeconds(build_cpu_start);
+                        return true;
+                    }
+                    auto transforms_a =
+                        robots[pair.robot_i]->getLinkTransforms(config_a);
+                    auto transforms_b =
+                        robots[pair.robot_j]->getLinkTransforms(config_b);
+                    build_worker_wall_seconds +=
+                        elapsedWallSeconds(build_wall_start);
+                    build_worker_cpu_seconds +=
+                        elapsedProcessCpuSeconds(build_cpu_start);
+
+                    const auto collision_wall_start = Clock::now();
+                    const double collision_cpu_start = processCpuSeconds();
+                    for (const auto &prim_a : cache_a.prims) {
+                        Transform3 world_a =
+                            eigenAffineToFcl(
+                                transforms_a[static_cast<std::size_t>(
+                                    prim_a.link_index)]) *
+                            prim_a.tf_link;
+                        for (const auto &prim_b : cache_b.prims) {
+                            Transform3 world_b =
+                                eigenAffineToFcl(
+                                    transforms_b[static_cast<std::size_t>(
+                                        prim_b.link_index)]) *
+                                prim_b.tf_link;
+                            if (fclPairCollide(prim_a.geom, world_a, prim_b.geom,
+                                               world_b)) {
+                                collision_worker_wall_seconds +=
+                                    elapsedWallSeconds(collision_wall_start);
+                                collision_worker_cpu_seconds +=
+                                    elapsedProcessCpuSeconds(
+                                        collision_cpu_start);
+                                return false;
+                            }
+                        }
+                    }
+                    collision_worker_wall_seconds +=
+                        elapsedWallSeconds(collision_wall_start);
+                    collision_worker_cpu_seconds +=
+                        elapsedProcessCpuSeconds(collision_cpu_start);
+                    return true;
+                };
                 for (std::size_t t = segment_begin; t < segment_end; ++t) {
                     for (const auto &pair : worker_pairs[worker_index]) {
                         if (effective_pair_starts[pair.pair_index] > t) {
                             continue;
                         }
-                        if (claimed_robots[pair.robot_i] ||
-                            claimed_robots[pair.robot_j]) {
+                        if (optimistic_unique &&
+                            (claimed_robots[pair.robot_i] ||
+                             claimed_robots[pair.robot_j])) {
                             continue;
                         }
-                        if (!isValidPair(*robots[pair.robot_i],
-                                         configAt(paths[pair.robot_i], t),
-                                         *robots[pair.robot_j],
-                                         configAt(paths[pair.robot_j], t))) {
+                        if (!pairValidAtT(pair, t)) {
                             raw_candidates.push_back(RawConflictCandidate{
                                 static_cast<std::uint64_t>(pair.pair_index),
                                 static_cast<std::uint64_t>(pair.robot_i),
@@ -1476,6 +1538,12 @@ private:
                     }
                 }
                 result.candidate_count = raw_candidates.size();
+                result.build_worker_wall_seconds = build_worker_wall_seconds;
+                result.build_worker_cpu_seconds = build_worker_cpu_seconds;
+                result.collision_worker_wall_seconds =
+                    collision_worker_wall_seconds;
+                result.collision_worker_cpu_seconds =
+                    collision_worker_cpu_seconds;
                 if (!writeValue(fd, result))
                     return 2;
                 if (!raw_candidates.empty() &&
@@ -1581,12 +1649,25 @@ private:
 
                 std::vector<ConflictCandidate> candidates;
 
-                for (auto &worker : workers) {
+                for (std::size_t worker_index = 0;
+                     worker_index < workers.size(); ++worker_index) {
+                    auto &worker = workers[worker_index];
                     ProcessScanResultHeader result;
                     if (!readValue(worker.fd, result)) {
                         throw std::runtime_error(
                             "Process-parallel FCL conflict finder result read "
                             "failed");
+                    }
+                    if (options.temporary_conflict_find_instrumentation) {
+                        // TEMP(ablation): remove this accumulation once the
+                        // conflict-detection timing table has been reproduced.
+                        options.temporary_conflict_find_instrumentation
+                            ->recordWorkerResult(
+                                worker_index,
+                                result.build_worker_wall_seconds,
+                                result.build_worker_cpu_seconds,
+                                result.collision_worker_wall_seconds,
+                                result.collision_worker_cpu_seconds);
                     }
                     std::vector<RawConflictCandidate> raw_candidates(
                         static_cast<std::size_t>(result.candidate_count));
@@ -1660,16 +1741,18 @@ private:
 
                 for (const auto &candidate : candidates) {
                     const auto &conflict = candidate.conflict;
-                    if (robot_used[static_cast<std::size_t>(
-                            conflict.robot_i)] ||
-                        robot_used[static_cast<std::size_t>(
-                            conflict.robot_j)]) {
+                    if (optimistic_unique &&
+                        (robot_used[static_cast<std::size_t>(
+                             conflict.robot_i)] ||
+                         robot_used[static_cast<std::size_t>(
+                             conflict.robot_j)])) {
                         continue;
                     }
                     if (acceptInterRobotConflictCandidate(
                             conflict, on_conflict, true, robot_used, out,
-                            accepted_claims)) {
-                        if (next_t_begin_by_pair_out &&
+                            accepted_claims,
+                            options.inter_robot_conflict_batch_mode)) {
+                        if (optimistic_unique && next_t_begin_by_pair_out &&
                             !pair_has_accepted[candidate.pair_index]) {
                             (*next_t_begin_by_pair_out)
                                 [candidate.pair_index] = conflict.timestep;
@@ -1696,7 +1779,7 @@ private:
                     }
                 }
 
-                if (next_t_begin_by_pair_out) {
+                if (optimistic_unique && next_t_begin_by_pair_out) {
                     for (const auto &pairs : worker_pairs) {
                         for (const auto &pair : pairs) {
                             if (pair_has_accepted[pair.pair_index])

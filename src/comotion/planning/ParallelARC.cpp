@@ -69,6 +69,63 @@ std::uint64_t processCpuElapsedNanoseconds(double start) {
     return static_cast<std::uint64_t>(elapsedProcessCpuSeconds(start) * 1e9);
 }
 
+nlohmann::json initialPathLengthStatsJson(
+    const std::vector<std::uint64_t> &arrival_timesteps,
+    std::size_t conflict_find_horizon) {
+    nlohmann::json stats = nlohmann::json::object();
+    stats["robot_count"] = arrival_timesteps.size();
+    if (arrival_timesteps.empty()) {
+        stats["arrival_timesteps_by_robot"] = nlohmann::json::array();
+        stats["path_timestep_counts_by_robot"] = nlohmann::json::array();
+        stats["arrival_timestep_min"] = 0;
+        stats["arrival_timestep_mean"] = 0.0;
+        stats["arrival_timestep_max"] = 0;
+        stats["path_timestep_count_min"] = 0;
+        stats["path_timestep_count_mean"] = 0.0;
+        stats["path_timestep_count_max"] = 0;
+        stats["sum_of_cost_arrival_timesteps"] = 0;
+        stats["estimated_parallel_scan_segments_at_configured_horizon"] = 0;
+        return stats;
+    }
+
+    std::vector<std::uint64_t> path_timestep_counts;
+    path_timestep_counts.reserve(arrival_timesteps.size());
+    std::uint64_t min_arrival = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t max_arrival = 0;
+    std::uint64_t sum_arrival = 0;
+    std::uint64_t min_count = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t max_count = 0;
+    std::uint64_t sum_count = 0;
+
+    for (const std::uint64_t arrival_timestep : arrival_timesteps) {
+        const std::uint64_t timestep_count = arrival_timestep + 1;
+        path_timestep_counts.push_back(timestep_count);
+        min_arrival = std::min(min_arrival, arrival_timestep);
+        max_arrival = std::max(max_arrival, arrival_timestep);
+        sum_arrival += arrival_timestep;
+        min_count = std::min(min_count, timestep_count);
+        max_count = std::max(max_count, timestep_count);
+        sum_count += timestep_count;
+    }
+
+    stats["arrival_timesteps_by_robot"] = arrival_timesteps;
+    stats["path_timestep_counts_by_robot"] = std::move(path_timestep_counts);
+    stats["arrival_timestep_min"] = min_arrival;
+    stats["arrival_timestep_mean"] =
+        static_cast<double>(sum_arrival) / arrival_timesteps.size();
+    stats["arrival_timestep_max"] = max_arrival;
+    stats["path_timestep_count_min"] = min_count;
+    stats["path_timestep_count_mean"] =
+        static_cast<double>(sum_count) / arrival_timesteps.size();
+    stats["path_timestep_count_max"] = max_count;
+    stats["sum_of_cost_arrival_timesteps"] = sum_arrival;
+    stats["estimated_parallel_scan_segments_at_configured_horizon"] =
+        conflict_find_horizon > 0
+            ? (max_count + conflict_find_horizon - 1) / conflict_find_horizon
+            : 0;
+    return stats;
+}
+
 std::string formatRobotList(const std::vector<int> &robots) {
     std::ostringstream os;
     os << "[";
@@ -143,6 +200,17 @@ const char *parallelArcConflictFindAssignmentSettingStr(
         return "pair_cover";
     case comotion::ConflictFindParallelAssignment::AllRobotsRoundRobin:
         return "all_robots_round_robin";
+    }
+    return "unknown";
+}
+
+const char *parallelArcConflictBatchModeStr(
+    comotion::InterRobotConflictBatchMode mode) {
+    switch (mode) {
+    case comotion::InterRobotConflictBatchMode::OptimisticIndependent:
+        return "optimistic_independent";
+    case comotion::InterRobotConflictBatchMode::IndependentOnly:
+        return "independent_only";
     }
     return "unknown";
 }
@@ -1030,7 +1098,7 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
 #endif
 }
 
-ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
+void ParallelARC::resetParallelArcRunState() {
     resetArcSolveState();
     resetConflictRoundStats();
     initial_individual_worker_processes_used_ = 0;
@@ -1043,215 +1111,234 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
     initial_individual_parent_wait_ns_ = 0;
     initial_individual_duplicate_attempts_ = 0;
     initial_individual_worker_stats_.clear();
+}
+
+void ParallelARC::finalizeParallelArcPlannerStats(
+    const ArcPlannerStatsSummary &planner_stats_summary,
+    const nlohmann::json &repair_failure_snapshot) {
+    auto stats = plannerStatsJsonFromSummary(planner_stats_summary);
+    // TEMP(ablation): keep the fine-grained conflict-find timing isolated
+    // in one nested block so we can delete it cleanly after repro work.
+    stats["temporary_conflict_find_timing"] =
+        temporaryConflictFindTimingJson(
+            temporary_conflict_find_main_process_wall_seconds_,
+            temporary_conflict_find_process_tree_cpu_seconds_,
+            temporary_conflict_find_build_worker_wall_seconds_,
+            temporary_conflict_find_build_worker_cpu_seconds_,
+            temporary_conflict_find_collision_worker_wall_seconds_,
+            temporary_conflict_find_collision_worker_cpu_seconds_,
+            temporary_conflict_find_critical_worker_index_,
+            temporary_conflict_find_critical_worker_build_wall_seconds_,
+            temporary_conflict_find_critical_worker_collision_wall_seconds_,
+            temporary_conflict_find_critical_worker_total_wall_seconds_);
+    stats["parallel_arc_result_transport"] = "pipes";
+    stats["parallel_arc_commit_strategy"] = "parent_splice";
+    stats["parallel_arc_parallel_initial_individual_plans"] =
+        parallelize_initial_individual_plans_;
+    stats["parallel_arc_initial_individual_workers"] =
+        initial_individual_worker_processes_used_;
+    stats["parallel_arc_initial_solution_or"] = initial_solution_or_;
+    stats["parallel_arc_initial_individual_duplicate_attempts_enabled"] =
+        initial_solution_or_;
+    stats["parallel_arc_initial_individual_or_parallelism"] =
+        initial_individual_duplicate_attempts_ > 0;
+    stats["parallel_arc_initial_individual_duplicate_attempts"] =
+        initial_individual_duplicate_attempts_;
+    stats["parallel_arc_initial_individual_duplicate_attempt_count"] =
+        initial_individual_duplicate_attempts_;
+    stats["parallel_arc_initial_individual_process_lifecycle"] =
+        initial_individual_worker_processes_used_ > 0 ? "persistent_pool" : "";
+    stats["parallel_arc_initial_individual_assignment_strategy"] =
+        initial_individual_worker_processes_used_ > 0
+            ? (initial_solution_or_ ? "dynamic_robot_queue_with_or"
+                                    : "dynamic_robot_queue")
+            : "";
+    stats["parallel_arc_initial_individual_ipc"] =
+        initial_individual_worker_processes_used_ > 0 ? "pipes" : "";
+    stats["parallel_arc_initial_individual_payload"] =
+        initial_individual_worker_processes_used_ > 0 ? "path_timings" : "";
+    stats["parallel_arc_initial_individual_command_bytes_written"] =
+        initial_individual_command_bytes_written_;
+    stats["parallel_arc_initial_individual_result_bytes_read"] =
+        initial_individual_result_bytes_read_;
+    stats["parallel_arc_initial_individual_process_launch_ns"] =
+        initial_individual_process_launch_ns_;
+    stats["parallel_arc_initial_individual_process_shutdown_ns"] =
+        initial_individual_process_shutdown_ns_;
+    stats["parallel_arc_initial_individual_command_write_ns"] =
+        initial_individual_command_write_ns_;
+    stats["parallel_arc_initial_individual_result_read_ns"] =
+        initial_individual_result_read_ns_;
+    stats["parallel_arc_initial_individual_parent_wait_ns"] =
+        initial_individual_parent_wait_ns_;
+    stats["parallel_arc_initial_individual_process_launch_ms"] =
+        static_cast<double>(initial_individual_process_launch_ns_) * 1e-6;
+    stats["parallel_arc_initial_individual_process_shutdown_ms"] =
+        static_cast<double>(initial_individual_process_shutdown_ns_) * 1e-6;
+    stats["parallel_arc_initial_individual_command_write_ms"] =
+        static_cast<double>(initial_individual_command_write_ns_) * 1e-6;
+    stats["parallel_arc_initial_individual_result_read_ms"] =
+        static_cast<double>(initial_individual_result_read_ns_) * 1e-6;
+    stats["parallel_arc_initial_individual_parent_wait_ms"] =
+        static_cast<double>(initial_individual_parent_wait_ns_) * 1e-6;
+    nlohmann::json initial_worker_stats = nlohmann::json::array();
+    for (const auto &worker_stats : initial_individual_worker_stats_) {
+        initial_worker_stats.push_back({
+            {"worker_index", worker_stats.worker_index},
+            {"robots", worker_stats.robots},
+            {"robot_count", worker_stats.robots.size()},
+            {"command_write_ns", worker_stats.command_write_ns},
+            {"result_read_ns", worker_stats.result_read_ns},
+            {"command_bytes_written", worker_stats.command_bytes_written},
+            {"result_bytes_read", worker_stats.result_bytes_read},
+            {"worker_wall_ns", worker_stats.worker_wall_ns},
+            {"solve_ns", worker_stats.solve_ns},
+            {"simplify_ns", worker_stats.simplify_ns},
+            {"cpu_seconds", worker_stats.cpu_seconds},
+            {"command_write_ms",
+             static_cast<double>(worker_stats.command_write_ns) * 1e-6},
+            {"result_read_ms",
+             static_cast<double>(worker_stats.result_read_ns) * 1e-6},
+            {"worker_wall_ms",
+             static_cast<double>(worker_stats.worker_wall_ns) * 1e-6},
+            {"solve_ms", static_cast<double>(worker_stats.solve_ns) * 1e-6},
+            {"simplify_ms",
+             static_cast<double>(worker_stats.simplify_ns) * 1e-6},
+        });
+    }
+    stats["parallel_arc_initial_individual_worker_stats"] =
+        std::move(initial_worker_stats);
+    stats["parallel_arc_conflict_find_mode"] =
+        parallelArcConflictFindModeStr(conflict_find_mode_);
+    stats["parallel_arc_conflict_find_horizon"] = conflict_find_horizon_;
+    stats["parallel_arc_conflict_find_workers"] =
+        conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
+            ? worker_processes_
+            : 1;
+    stats["parallel_arc_conflict_find_ipc"] =
+        conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
+            ? "pipes"
+            : "";
+    stats["parallel_arc_conflict_find_process_lifecycle"] =
+        conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
+            ? "per_find_call"
+            : "";
+    stats["parallel_arc_conflict_find_assignment_setting"] =
+        parallelArcConflictFindAssignmentSettingStr(conflict_find_assignment_);
+    stats["parallel_arc_conflict_find_assignment_strategy"] =
+        conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
+            ? parallelArcConflictFindAssignmentStr(conflict_find_assignment_,
+                                                  worker_processes_)
+            : "";
+    stats["parallel_arc_conflict_batch_mode"] =
+        parallelArcConflictBatchModeStr(conflict_batch_mode_);
+    stats["parallel_arc_conflict_find_logical_bucket_count"] =
+        conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
+            ? worker_processes_
+            : 0;
+    stats["parallel_arc_repair_parallelism"] = worker_processes_ > 1;
+    stats["parallel_arc_repair_or_parallelism"] =
+        worker_processes_ > 1 && repair_duplicate_attempts_;
+    stats["parallel_arc_repair_duplicate_attempts"] =
+        repair_duplicate_attempts_;
+    stats["parallel_arc_repair_assignment_strategy"] =
+        worker_processes_ > 1
+            ? (repair_duplicate_attempts_
+                   ? "round_robin_active_subproblems"
+                   : "round_robin_one_live_attempt_per_subproblem")
+            : "";
+    stats["parallel_arc_repair_process_lifecycle"] =
+        worker_processes_ > 1 ? "persistent_batch_pool" : "";
+    stats["parallel_arc_repair_ipc"] = worker_processes_ > 1 ? "pipes" : "";
+    stats["parallel_arc_repair_cancellation"] =
+        worker_processes_ > 1
+            ? "cooperative_signal_with_terminate_fallback"
+            : "";
+    nlohmann::json conflict_rounds = nlohmann::json::array();
+    for (std::size_t round_index = 0; round_index < conflict_round_stats_.size();
+         ++round_index) {
+        nlohmann::json entries = nlohmann::json::array();
+        const auto &round = conflict_round_stats_[round_index];
+        for (std::size_t entry_index = 0; entry_index < round.entries.size();
+             ++entry_index) {
+            const auto &entry = round.entries[entry_index];
+            nlohmann::json expansion_trace = nlohmann::json::array();
+            for (const auto &step : entry.expansion_trace) {
+                expansion_trace.push_back({
+                    {"from_robot", step.from_robot},
+                    {"added_robot", step.added_robot},
+                    {"window_robot_a", step.window_robot_a},
+                    {"window_robot_b", step.window_robot_b},
+                    {"window_start_t", step.window_start_t},
+                    {"window_end_t", step.window_end_t},
+                    {"history_event_ids", step.history_event_ids},
+                });
+            }
+            entries.push_back({
+                {"entry_index", entry_index},
+                {"seed_robot_i", entry.seed_robot_i},
+                {"seed_robot_j", entry.seed_robot_j},
+                {"conflict_timestep", entry.conflict_timestep},
+                {"expanded_team", entry.expanded_team},
+                {"expanded_team_size", entry.expanded_team.size()},
+                {"final_team", entry.final_team},
+                {"final_team_size", entry.final_team.size()},
+                {"window_begin_t", entry.window_begin_t},
+                {"window_end_t", entry.window_end_t},
+                {"expansion_trace", std::move(expansion_trace)},
+                {"attempts_launched", entry.attempts_launched},
+                {"cancelled_sibling_attempts",
+                 entry.cancelled_sibling_attempts},
+                {"winner_attempt_index", entry.winner_attempt_index},
+                {"winner_slot_index", entry.winner_slot_index},
+                {"winner_planning_seed", entry.winner_planning_seed},
+                {"winner_worker_wall_ns", entry.winner_worker_wall_ns},
+                {"winner_worker_wall_ms",
+                 static_cast<double>(entry.winner_worker_wall_ns) * 1e-6},
+                {"patch_fingerprint", entry.patch_fingerprint},
+                {"local_patch_fingerprints", entry.local_patch_fingerprints},
+                {"local_patch_arrival_timesteps",
+                 entry.local_patch_arrival_timesteps},
+                {"post_apply_global_arrival_timesteps",
+                 entry.post_apply_global_arrival_timesteps},
+            });
+        }
+        conflict_rounds.push_back({
+            {"round_index", round_index},
+            {"entry_count", round.entries.size()},
+            {"entries", std::move(entries)},
+        });
+    }
+    stats["parallel_arc_conflict_rounds"] = std::move(conflict_rounds);
+    nlohmann::json repair_history_events = nlohmann::json::array();
+    for (const auto &event : appliedRepairHistoryEvents()) {
+        repair_history_events.push_back({
+            {"history_event_id", event.event_id},
+            {"robots", event.robots},
+            {"robot_count", event.robots.size()},
+            {"window_start_t", event.window_start_t},
+            {"window_end_t", event.window_end_t},
+        });
+    }
+    stats["parallel_arc_applied_repair_history_events"] =
+        std::move(repair_history_events);
+    stats["parallel_arc_repair_failure_snapshot"] = repair_failure_snapshot;
+    setPlannerStatsJson(std::move(stats));
+}
+
+ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
+    resetParallelArcRunState();
     const auto solve_start = Clock::now();
     const unsigned effective_workers = std::max(1u, worker_processes_);
     ArcPlannerStatsSummary planner_stats_summary;
     planner_stats_summary.local_solver_mode = local_solver_mode_;
     planner_stats_summary.local_prioritized_strrt_max_iterations =
         local_prioritized_strrt_max_iterations_;
+    planner_stats_summary.local_composite_rrt_use_makespan_metric =
+        local_composite_rrt_use_makespan_metric_;
+    planner_stats_summary.bounded_local_repair_epsilon_timesteps =
+        bounded_local_repair_epsilon_timesteps_;
     nlohmann::json repair_failure_snapshot = nlohmann::json::array();
-    const auto finalizePlannerStats = [&]() {
-        auto stats = plannerStatsJsonFromSummary(
-            planner_stats_summary);
-        stats["parallel_arc_result_transport"] = "pipes";
-        stats["parallel_arc_commit_strategy"] = "parent_splice";
-        stats["parallel_arc_parallel_initial_individual_plans"] =
-            parallelize_initial_individual_plans_;
-        stats["parallel_arc_initial_individual_workers"] =
-            initial_individual_worker_processes_used_;
-        stats["parallel_arc_initial_solution_or"] = initial_solution_or_;
-        stats["parallel_arc_initial_individual_duplicate_attempts_enabled"] =
-            initial_solution_or_;
-        stats["parallel_arc_initial_individual_or_parallelism"] =
-            initial_individual_duplicate_attempts_ > 0;
-        stats["parallel_arc_initial_individual_duplicate_attempts"] =
-            initial_individual_duplicate_attempts_;
-        stats["parallel_arc_initial_individual_duplicate_attempt_count"] =
-            initial_individual_duplicate_attempts_;
-        stats["parallel_arc_initial_individual_process_lifecycle"] =
-            initial_individual_worker_processes_used_ > 0 ? "persistent_pool"
-                                                          : "";
-        stats["parallel_arc_initial_individual_assignment_strategy"] =
-            initial_individual_worker_processes_used_ > 0
-                ? (initial_solution_or_ ? "dynamic_robot_queue_with_or"
-                                        : "dynamic_robot_queue")
-                : "";
-        stats["parallel_arc_initial_individual_ipc"] =
-            initial_individual_worker_processes_used_ > 0 ? "pipes" : "";
-        stats["parallel_arc_initial_individual_payload"] =
-            initial_individual_worker_processes_used_ > 0 ? "path_timings" : "";
-        stats["parallel_arc_initial_individual_command_bytes_written"] =
-            initial_individual_command_bytes_written_;
-        stats["parallel_arc_initial_individual_result_bytes_read"] =
-            initial_individual_result_bytes_read_;
-        stats["parallel_arc_initial_individual_process_launch_ns"] =
-            initial_individual_process_launch_ns_;
-        stats["parallel_arc_initial_individual_process_shutdown_ns"] =
-            initial_individual_process_shutdown_ns_;
-        stats["parallel_arc_initial_individual_command_write_ns"] =
-            initial_individual_command_write_ns_;
-        stats["parallel_arc_initial_individual_result_read_ns"] =
-            initial_individual_result_read_ns_;
-        stats["parallel_arc_initial_individual_parent_wait_ns"] =
-            initial_individual_parent_wait_ns_;
-        stats["parallel_arc_initial_individual_process_launch_ms"] =
-            static_cast<double>(initial_individual_process_launch_ns_) * 1e-6;
-        stats["parallel_arc_initial_individual_process_shutdown_ms"] =
-            static_cast<double>(initial_individual_process_shutdown_ns_) * 1e-6;
-        stats["parallel_arc_initial_individual_command_write_ms"] =
-            static_cast<double>(initial_individual_command_write_ns_) * 1e-6;
-        stats["parallel_arc_initial_individual_result_read_ms"] =
-            static_cast<double>(initial_individual_result_read_ns_) * 1e-6;
-        stats["parallel_arc_initial_individual_parent_wait_ms"] =
-            static_cast<double>(initial_individual_parent_wait_ns_) * 1e-6;
-        nlohmann::json initial_worker_stats = nlohmann::json::array();
-        for (const auto &worker_stats : initial_individual_worker_stats_) {
-            initial_worker_stats.push_back({
-                {"worker_index", worker_stats.worker_index},
-                {"robots", worker_stats.robots},
-                {"robot_count", worker_stats.robots.size()},
-                {"command_write_ns", worker_stats.command_write_ns},
-                {"result_read_ns", worker_stats.result_read_ns},
-                {"command_bytes_written",
-                 worker_stats.command_bytes_written},
-                {"result_bytes_read", worker_stats.result_bytes_read},
-                {"worker_wall_ns", worker_stats.worker_wall_ns},
-                {"solve_ns", worker_stats.solve_ns},
-                {"simplify_ns", worker_stats.simplify_ns},
-                {"cpu_seconds", worker_stats.cpu_seconds},
-                {"command_write_ms",
-                 static_cast<double>(worker_stats.command_write_ns) * 1e-6},
-                {"result_read_ms",
-                 static_cast<double>(worker_stats.result_read_ns) * 1e-6},
-                {"worker_wall_ms",
-                 static_cast<double>(worker_stats.worker_wall_ns) * 1e-6},
-                {"solve_ms",
-                 static_cast<double>(worker_stats.solve_ns) * 1e-6},
-                {"simplify_ms",
-                 static_cast<double>(worker_stats.simplify_ns) * 1e-6},
-            });
-        }
-        stats["parallel_arc_initial_individual_worker_stats"] =
-            std::move(initial_worker_stats);
-        stats["parallel_arc_conflict_find_mode"] =
-            parallelArcConflictFindModeStr(conflict_find_mode_);
-        stats["parallel_arc_conflict_find_horizon"] =
-            conflict_find_horizon_;
-        stats["parallel_arc_conflict_find_workers"] =
-            conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
-                ? worker_processes_
-                : 1;
-        stats["parallel_arc_conflict_find_ipc"] =
-            conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
-                ? "pipes"
-                : "";
-        stats["parallel_arc_conflict_find_process_lifecycle"] =
-            conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
-                ? "per_find_call"
-                : "";
-        stats["parallel_arc_conflict_find_assignment_setting"] =
-            parallelArcConflictFindAssignmentSettingStr(conflict_find_assignment_);
-        stats["parallel_arc_conflict_find_assignment_strategy"] =
-            conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
-                ? parallelArcConflictFindAssignmentStr(
-                      conflict_find_assignment_, worker_processes_)
-                : "";
-        stats["parallel_arc_conflict_find_logical_bucket_count"] =
-            conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
-                ? worker_processes_
-                : 0;
-        stats["parallel_arc_repair_parallelism"] = worker_processes_ > 1;
-        stats["parallel_arc_repair_or_parallelism"] =
-            worker_processes_ > 1 && repair_duplicate_attempts_;
-        stats["parallel_arc_repair_duplicate_attempts"] =
-            repair_duplicate_attempts_;
-        stats["parallel_arc_repair_assignment_strategy"] =
-            worker_processes_ > 1
-                ? (repair_duplicate_attempts_
-                       ? "round_robin_active_subproblems"
-                       : "round_robin_one_live_attempt_per_subproblem")
-                : "";
-        stats["parallel_arc_repair_process_lifecycle"] =
-            worker_processes_ > 1 ? "persistent_batch_pool" : "";
-        stats["parallel_arc_repair_ipc"] =
-            worker_processes_ > 1 ? "pipes" : "";
-        stats["parallel_arc_repair_cancellation"] =
-            worker_processes_ > 1
-                ? "cooperative_signal_with_terminate_fallback"
-                : "";
-        nlohmann::json conflict_rounds = nlohmann::json::array();
-        for (std::size_t round_index = 0;
-             round_index < conflict_round_stats_.size(); ++round_index) {
-            nlohmann::json entries = nlohmann::json::array();
-            const auto &round = conflict_round_stats_[round_index];
-            for (std::size_t entry_index = 0;
-                 entry_index < round.entries.size(); ++entry_index) {
-                const auto &entry = round.entries[entry_index];
-                nlohmann::json expansion_trace = nlohmann::json::array();
-                for (const auto &step : entry.expansion_trace) {
-                    expansion_trace.push_back({
-                        {"from_robot", step.from_robot},
-                        {"added_robot", step.added_robot},
-                        {"window_robot_a", step.window_robot_a},
-                        {"window_robot_b", step.window_robot_b},
-                        {"window_start_t", step.window_start_t},
-                        {"window_end_t", step.window_end_t},
-                        {"history_event_ids", step.history_event_ids},
-                    });
-                }
-                entries.push_back({
-                    {"entry_index", entry_index},
-                    {"seed_robot_i", entry.seed_robot_i},
-                    {"seed_robot_j", entry.seed_robot_j},
-                    {"conflict_timestep", entry.conflict_timestep},
-                    {"expanded_team", entry.expanded_team},
-                    {"expanded_team_size", entry.expanded_team.size()},
-                    {"final_team", entry.final_team},
-                    {"final_team_size", entry.final_team.size()},
-                    {"window_begin_t", entry.window_begin_t},
-                    {"window_end_t", entry.window_end_t},
-                    {"expansion_trace", std::move(expansion_trace)},
-                    {"attempts_launched", entry.attempts_launched},
-                    {"cancelled_sibling_attempts",
-                     entry.cancelled_sibling_attempts},
-                    {"winner_attempt_index", entry.winner_attempt_index},
-                    {"winner_slot_index", entry.winner_slot_index},
-                    {"winner_planning_seed", entry.winner_planning_seed},
-                    {"winner_worker_wall_ns", entry.winner_worker_wall_ns},
-                    {"winner_worker_wall_ms",
-                     static_cast<double>(entry.winner_worker_wall_ns) * 1e-6},
-                    {"patch_fingerprint", entry.patch_fingerprint},
-                    {"local_patch_fingerprints",
-                     entry.local_patch_fingerprints},
-                    {"local_patch_arrival_timesteps",
-                     entry.local_patch_arrival_timesteps},
-                    {"post_apply_global_arrival_timesteps",
-                     entry.post_apply_global_arrival_timesteps},
-                });
-            }
-            conflict_rounds.push_back({
-                {"round_index", round_index},
-                {"entry_count", round.entries.size()},
-                {"entries", std::move(entries)},
-            });
-        }
-        stats["parallel_arc_conflict_rounds"] = std::move(conflict_rounds);
-        nlohmann::json repair_history_events = nlohmann::json::array();
-        for (const auto &event : appliedRepairHistoryEvents()) {
-            repair_history_events.push_back({
-                {"history_event_id", event.event_id},
-                {"robots", event.robots},
-                {"robot_count", event.robots.size()},
-                {"window_start_t", event.window_start_t},
-                {"window_end_t", event.window_end_t},
-            });
-        }
-        stats["parallel_arc_applied_repair_history_events"] =
-            std::move(repair_history_events);
-        stats["parallel_arc_repair_failure_snapshot"] =
-            repair_failure_snapshot;
-        setPlannerStatsJson(std::move(stats));
-    };
 
     const auto robot_count_for_initial =
         static_cast<unsigned>(std::max(0, problem_->numRobots()));
@@ -1273,7 +1360,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             initial_solution_times_seconds_wall_clock_;
         planner_stats_summary.initial_solution_times_seconds_cpu =
             initial_solution_times_seconds_cpu_;
-        finalizePlannerStats();
+        finalizeParallelArcPlannerStats(planner_stats_summary,
+                                        repair_failure_snapshot);
         return ompl::base::PlannerStatus::TIMEOUT;
     }
     planner_stats_summary.initial_solution_times_seconds_wall_clock =
@@ -1294,7 +1382,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
     int batch_index = 0;
     auto returnExactSolution = [&]() {
         setSolutionMetricsFromPaths(solution_paths_);
-        finalizePlannerStats();
+        finalizeParallelArcPlannerStats(planner_stats_summary,
+                                        repair_failure_snapshot);
         return ompl::base::PlannerStatus::EXACT_SOLUTION;
     };
     while (true) {
@@ -1312,6 +1401,7 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         }
 
         CompositePathValidationOptions options = conflictScanOptions();
+        options.inter_robot_conflict_batch_mode = conflict_batch_mode_;
         options.stop_requested = [&]() {
             return std::chrono::duration<double>(
                        Clock::now() - solve_start)
@@ -1328,21 +1418,50 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         std::vector<std::size_t> next_t_begin_by_pair;
         const auto conflict_detection_start = Clock::now();
         const double conflict_detection_cpu_start = processCpuSeconds();
+        const auto conflict_detection_tree_cpu_start =
+            processTreeCpuUsageSnapshot();
+        TemporaryConflictFindInstrumentation temporary_conflict_find_timing;
+        options.temporary_conflict_find_instrumentation =
+            &temporary_conflict_find_timing;
         std::vector<SubproblemConflict> conflicts = conflict_checker.findConflicts(
             solution_paths_, ptrs, options, 0, effective_workers, true,
             [this](const Conflict &conflict) {
                 return expandConflictForSubproblem(conflict);
             },
             nullptr, &next_t_begin_by_pair);
-        planner_stats_summary.conflict_detection_times_seconds_wall_clock +=
+        const double conflict_detection_wall_seconds =
             std::chrono::duration<double>(Clock::now() -
                                           conflict_detection_start)
                 .count();
+        planner_stats_summary.conflict_detection_times_seconds_wall_clock +=
+            conflict_detection_wall_seconds;
         planner_stats_summary.conflict_detection_times_seconds_cpu +=
             elapsedProcessCpuSeconds(conflict_detection_cpu_start);
+        temporary_conflict_find_main_process_wall_seconds_.push_back(
+            conflict_detection_wall_seconds);
+        temporary_conflict_find_process_tree_cpu_seconds_.push_back(
+            elapsedProcessTreeCpuSeconds(conflict_detection_tree_cpu_start,
+                                         processTreeCpuUsageSnapshot()));
+        temporary_conflict_find_build_worker_wall_seconds_.push_back(
+            temporary_conflict_find_timing.build_worker_wall_seconds);
+        temporary_conflict_find_build_worker_cpu_seconds_.push_back(
+            temporary_conflict_find_timing.build_worker_cpu_seconds);
+        temporary_conflict_find_collision_worker_wall_seconds_.push_back(
+            temporary_conflict_find_timing.collision_worker_wall_seconds);
+        temporary_conflict_find_collision_worker_cpu_seconds_.push_back(
+            temporary_conflict_find_timing.collision_worker_cpu_seconds);
+        temporary_conflict_find_critical_worker_index_.push_back(
+            temporary_conflict_find_timing.criticalWorkerIndex());
+        temporary_conflict_find_critical_worker_build_wall_seconds_.push_back(
+            temporary_conflict_find_timing.criticalWorkerBuildWallSeconds());
+        temporary_conflict_find_critical_worker_collision_wall_seconds_.push_back(
+            temporary_conflict_find_timing.criticalWorkerCollisionWallSeconds());
+        temporary_conflict_find_critical_worker_total_wall_seconds_.push_back(
+            temporary_conflict_find_timing.criticalWorkerTotalWallSeconds());
         if (std::chrono::duration<double>(Clock::now() - solve_start).count() >=
             timeLimit) {
-            finalizePlannerStats();
+            finalizeParallelArcPlannerStats(planner_stats_summary,
+                                            repair_failure_snapshot);
             return ompl::base::PlannerStatus::TIMEOUT;
         }
         if (conflicts.empty())
@@ -1487,7 +1606,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                         std::chrono::duration<double>(Clock::now() -
                                                       batch_resolution_start)
                             .count();
-                    finalizePlannerStats();
+                    finalizeParallelArcPlannerStats(
+                        planner_stats_summary, repair_failure_snapshot);
                     return ompl::base::PlannerStatus::TIMEOUT;
                 }
 
@@ -1506,7 +1626,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                         std::chrono::duration<double>(Clock::now() -
                                                       batch_resolution_start)
                             .count();
-                    finalizePlannerStats();
+                    finalizeParallelArcPlannerStats(
+                        planner_stats_summary, repair_failure_snapshot);
                     return ompl::base::PlannerStatus::TIMEOUT;
                 }
                 if (apply_status == ApplyResult::Applied) {
@@ -2497,7 +2618,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                 std::chrono::duration<double>(Clock::now() -
                                               batch_resolution_start)
                     .count();
-            finalizePlannerStats();
+            finalizeParallelArcPlannerStats(planner_stats_summary,
+                                            repair_failure_snapshot);
             return ompl::base::PlannerStatus::TIMEOUT;
         }
         planner_stats_summary.conflict_resolution_times_seconds_wall_clock +=
@@ -2519,8 +2641,139 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         ++batch_index;
     }
 
-    finalizePlannerStats();
+    finalizeParallelArcPlannerStats(planner_stats_summary,
+                                    repair_failure_snapshot);
     return ompl::base::PlannerStatus::TIMEOUT;
+}
+
+bool ParallelARC::runConflictDetectionAblation(double timeLimit) {
+    resetParallelArcRunState();
+    const auto solve_start = Clock::now();
+    const unsigned effective_workers = std::max(1u, worker_processes_);
+    ArcPlannerStatsSummary planner_stats_summary;
+    planner_stats_summary.local_solver_mode = local_solver_mode_;
+    planner_stats_summary.local_prioritized_strrt_max_iterations =
+        local_prioritized_strrt_max_iterations_;
+    planner_stats_summary.local_composite_rrt_use_makespan_metric =
+        local_composite_rrt_use_makespan_metric_;
+    planner_stats_summary.bounded_local_repair_epsilon_timesteps =
+        bounded_local_repair_epsilon_timesteps_;
+    const auto robot_count_for_initial =
+        static_cast<unsigned>(std::max(0, problem_->numRobots()));
+    const unsigned initial_workers =
+        robot_count_for_initial == 0
+            ? 0
+            : (initial_solution_or_
+                   ? effective_workers
+                   : std::min(effective_workers, robot_count_for_initial));
+    const bool use_parallel_initial =
+        parallelize_initial_individual_plans_ && initial_workers > 1;
+    const bool initial_plans_ok =
+        use_parallel_initial
+            ? planInitialIndividualPathsWithWorkers(
+                  solve_start, timeLimit, initial_workers, solution_paths_)
+            : planIndividualPaths(solve_start, timeLimit, solution_paths_);
+    planner_stats_summary.initial_solution_times_seconds_wall_clock =
+        initial_solution_times_seconds_wall_clock_;
+    planner_stats_summary.initial_solution_times_seconds_cpu =
+        initial_solution_times_seconds_cpu_;
+    if (!initial_plans_ok) {
+        finalizeParallelArcPlannerStats(planner_stats_summary,
+                                        nlohmann::json::array());
+        auto stats = plannerStatsJson();
+        stats["parallel_arc_conflict_ablation_mode"] =
+            "initial_paths_single_scan";
+        stats["parallel_arc_conflict_ablation_success"] = false;
+        stats["parallel_arc_conflict_ablation_completed_scan"] = false;
+        stats["parallel_arc_conflict_ablation_detected_conflicts"] = 0;
+        stats["parallel_arc_conflict_ablation_initial_path_robot_count"] = 0;
+        setPlannerStatsJson(std::move(stats));
+        return false;
+    }
+
+    const auto initial_path_length_stats =
+        initialPathLengthStatsJson(true_arrival_timesteps_,
+                                   conflict_find_horizon_);
+    initializeConflictScanStarts(solution_paths_.size());
+
+#if defined(_WIN32)
+    if (effective_workers > 1) {
+        throw std::runtime_error(
+            "ParallelARC with worker_processes > 1 requires POSIX fork support");
+    }
+#endif
+
+    auto ptrs = problem_->robotModelPtrs();
+    CompositePathValidationOptions options = conflictScanOptions();
+    options.inter_robot_conflict_batch_mode = conflict_batch_mode_;
+    if (conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel) {
+        options.conflict_find_parallel_workers = effective_workers;
+        options.conflict_find_parallel_horizon = conflict_find_horizon_;
+        options.conflict_find_parallel_assignment = conflict_find_assignment_;
+    }
+    ConflictChecker conflict_checker(problem_->collisionChecker());
+    std::vector<std::size_t> next_t_begin_by_pair;
+    const auto conflict_detection_start = Clock::now();
+    const double conflict_detection_cpu_start = processCpuSeconds();
+    const auto conflict_detection_tree_cpu_start =
+        processTreeCpuUsageSnapshot();
+    TemporaryConflictFindInstrumentation temporary_conflict_find_timing;
+    options.temporary_conflict_find_instrumentation =
+        &temporary_conflict_find_timing;
+    const std::vector<SubproblemConflict> conflicts = conflict_checker.findConflicts(
+        solution_paths_, ptrs, options, 0, effective_workers, true,
+        [this](const Conflict &conflict) {
+            return expandConflictForSubproblem(conflict);
+        },
+        nullptr, &next_t_begin_by_pair);
+    const double conflict_detection_wall_seconds =
+        std::chrono::duration<double>(Clock::now() - conflict_detection_start)
+            .count();
+    planner_stats_summary.conflict_detection_times_seconds_wall_clock +=
+        conflict_detection_wall_seconds;
+    planner_stats_summary.conflict_detection_times_seconds_cpu +=
+        elapsedProcessCpuSeconds(conflict_detection_cpu_start);
+    planner_stats_summary.num_conflicts =
+        static_cast<std::uint64_t>(conflicts.size());
+    temporary_conflict_find_main_process_wall_seconds_.push_back(
+        conflict_detection_wall_seconds);
+    temporary_conflict_find_process_tree_cpu_seconds_.push_back(
+        elapsedProcessTreeCpuSeconds(conflict_detection_tree_cpu_start,
+                                     processTreeCpuUsageSnapshot()));
+    temporary_conflict_find_build_worker_wall_seconds_.push_back(
+        temporary_conflict_find_timing.build_worker_wall_seconds);
+    temporary_conflict_find_build_worker_cpu_seconds_.push_back(
+        temporary_conflict_find_timing.build_worker_cpu_seconds);
+    temporary_conflict_find_collision_worker_wall_seconds_.push_back(
+        temporary_conflict_find_timing.collision_worker_wall_seconds);
+    temporary_conflict_find_collision_worker_cpu_seconds_.push_back(
+        temporary_conflict_find_timing.collision_worker_cpu_seconds);
+    temporary_conflict_find_critical_worker_index_.push_back(
+        temporary_conflict_find_timing.criticalWorkerIndex());
+    temporary_conflict_find_critical_worker_build_wall_seconds_.push_back(
+        temporary_conflict_find_timing.criticalWorkerBuildWallSeconds());
+    temporary_conflict_find_critical_worker_collision_wall_seconds_.push_back(
+        temporary_conflict_find_timing.criticalWorkerCollisionWallSeconds());
+    temporary_conflict_find_critical_worker_total_wall_seconds_.push_back(
+        temporary_conflict_find_timing.criticalWorkerTotalWallSeconds());
+
+    finalizeParallelArcPlannerStats(planner_stats_summary,
+                                    nlohmann::json::array());
+    auto stats = plannerStatsJson();
+    stats["parallel_arc_conflict_ablation_mode"] =
+        "initial_paths_single_scan";
+    stats["parallel_arc_conflict_ablation_success"] = true;
+    stats["parallel_arc_conflict_ablation_completed_scan"] = true;
+    stats["parallel_arc_conflict_ablation_detected_conflicts"] =
+        conflicts.size();
+    stats["parallel_arc_conflict_ablation_initial_path_robot_count"] =
+        solution_paths_.size();
+    // TEMP(ablation): remove this once we no longer need to compare the
+    // conflict horizon sweep against the actual initial path durations.
+    stats["temporary_initial_path_lengths"] =
+        std::move(initial_path_length_stats);
+    setPlannerStatsJson(std::move(stats));
+    return true;
 }
 
 } // namespace comotion

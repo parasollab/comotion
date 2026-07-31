@@ -5,11 +5,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cerrno>
 #include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -43,6 +45,8 @@ namespace detail {
 
 #if COMOTION_HAVE_VAMP
 namespace {
+
+using Clock = std::chrono::steady_clock;
 
 constexpr std::size_t kRake = detail::kVampPackingWidth;
 using EnvironmentFloat = vamp::collision::Environment<float>;
@@ -107,6 +111,27 @@ bool writeValue(int fd, const T &value) {
     return writeExact(fd, &value, sizeof(T));
 }
 #endif
+
+double processCpuSeconds() {
+#if defined(CLOCK_PROCESS_CPUTIME_ID)
+    timespec ts {};
+    if (::clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) == 0) {
+        return static_cast<double>(ts.tv_sec) +
+               static_cast<double>(ts.tv_nsec) * 1e-9;
+    }
+#endif
+    return static_cast<double>(std::clock()) /
+           static_cast<double>(CLOCKS_PER_SEC);
+}
+
+double elapsedProcessCpuSeconds(double start) {
+    const double elapsed = processCpuSeconds() - start;
+    return elapsed < 0.0 ? 0.0 : elapsed;
+}
+
+double elapsedWallSeconds(const Clock::time_point &start) {
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
 
 std::vector<BatchPack> makeBatchPacks(std::size_t begin, std::size_t end,
                                       VampBatchPacking packing) {
@@ -1666,6 +1691,10 @@ public:
         if (global_begin >= end) {
             return out;
         }
+        const bool optimistic_unique =
+            unique &&
+            options.inter_robot_conflict_batch_mode ==
+                InterRobotConflictBatchMode::OptimisticIndependent;
         const auto packs =
             makeBatchPacks(global_begin, end, VampBatchPacking::Linear);
 
@@ -1681,10 +1710,10 @@ public:
             std::vector<Candidate> candidates;
 
             for (std::size_t i = 0; i < paths.size(); ++i) {
-                if (unique && robot_used[i] != 0)
+                if (optimistic_unique && robot_used[i] != 0)
                     continue;
                 for (std::size_t j = i + 1; j < paths.size(); ++j) {
-                    if (unique && robot_used[j] != 0)
+                    if (optimistic_unique && robot_used[j] != 0)
                         continue;
                     const std::size_t pair_index =
                         pairFrontierIndex(i, j, paths.size());
@@ -1711,11 +1740,12 @@ public:
                             conflict->alpha, conflict->kind,
                             conflict->config_a, conflict->config_b},
                             pair_index});
-                        if (unique || max_conflicts == 1)
+                        if (optimistic_unique || max_conflicts == 1)
                             break;
                         pair_begin = conflict->timestep + 1;
                     }
-                    if (!pair_had_candidate && next_t_begin_by_pair_out &&
+                    if (optimistic_unique && !pair_had_candidate &&
+                        next_t_begin_by_pair_out &&
                         !pair_has_accepted[pair_index]) {
                         (*next_t_begin_by_pair_out)[pair_index] =
                             std::min(end, pack_last + 1);
@@ -1736,15 +1766,16 @@ public:
 
             for (const auto &candidate : candidates) {
                 const auto &conflict = candidate.conflict;
-                if (unique &&
+                if (optimistic_unique &&
                     (robot_used[static_cast<std::size_t>(conflict.robot_i)] ||
                      robot_used[static_cast<std::size_t>(conflict.robot_j)])) {
                     continue;
                 }
                 if (acceptInterRobotConflictCandidate(
                         conflict, on_conflict, unique, robot_used, out,
-                        accepted_claims)) {
-                    if (next_t_begin_by_pair_out &&
+                        accepted_claims,
+                        options.inter_robot_conflict_batch_mode)) {
+                    if (optimistic_unique && next_t_begin_by_pair_out &&
                         !pair_has_accepted[candidate.pair_index]) {
                         (*next_t_begin_by_pair_out)[candidate.pair_index] =
                             conflict.timestep;
@@ -1939,6 +1970,10 @@ private:
         };
         struct ProcessScanResultHeader {
             std::uint64_t candidate_count = 0;
+            double build_worker_wall_seconds = 0.0;
+            double build_worker_cpu_seconds = 0.0;
+            double collision_worker_wall_seconds = 0.0;
+            double collision_worker_cpu_seconds = 0.0;
         };
         struct ProcessWorker {
             pid_t pid = -1;
@@ -1987,6 +2022,9 @@ private:
             std::max<std::size_t>(1, options.conflict_find_parallel_workers);
         const std::size_t horizon =
             std::max<std::size_t>(1, options.conflict_find_parallel_horizon);
+        const bool optimistic_unique =
+            options.inter_robot_conflict_batch_mode ==
+            InterRobotConflictBatchMode::OptimisticIndependent;
         const bool use_pair_cover_assignment = usePairCoverConflictAssignment(
             options.conflict_find_parallel_assignment, worker_count);
         constexpr std::size_t kInvalidRobotSlot =
@@ -1998,52 +2036,24 @@ private:
             std::vector<std::size_t>(paths.size(), kInvalidRobotSlot));
 
         if (use_pair_cover_assignment) {
-            const auto buckets = pairCoveringDesign(
+            const auto assignment = pairCoverConflictAssignment(
                 static_cast<int>(paths.size()),
                 static_cast<int>(worker_count));
-            std::vector<std::uint64_t> robot_bucket_masks(paths.size(), 0);
             for (std::size_t worker = 0; worker < worker_count; ++worker) {
-                worker_robots[worker].reserve(buckets[worker].size());
-                for (const int robot : buckets[worker]) {
+                worker_robots[worker].reserve(
+                    assignment.worker_robots[worker].size());
+                for (const int robot : assignment.worker_robots[worker]) {
                     const auto robot_index = static_cast<std::size_t>(robot);
                     worker_robot_slots[worker][robot_index] =
                         worker_robots[worker].size();
                     worker_robots[worker].push_back(robot_index);
-                    robot_bucket_masks[robot_index] |=
-                        std::uint64_t{1} << worker;
                 }
-            }
-
-            for (std::size_t i = 0; i < paths.size(); ++i) {
-                for (std::size_t j = i + 1; j < paths.size(); ++j) {
-                    const std::uint64_t covering_workers =
-                        robot_bucket_masks[i] & robot_bucket_masks[j];
-                    if (covering_workers == 0) {
-                        throw std::runtime_error(
-                            "VAMP pair-cover conflict finder assignment did "
-                            "not cover every robot pair");
-                    }
-
-                    std::size_t best_worker = worker_count;
-                    std::size_t best_load =
-                        std::numeric_limits<std::size_t>::max();
-                    for (std::size_t worker = 0; worker < worker_count;
-                         ++worker) {
-                        if ((covering_workers &
-                             (std::uint64_t{1} << worker)) == 0) {
-                            continue;
-                        }
-                        const std::size_t load = worker_pairs[worker].size();
-                        if (load < best_load) {
-                            best_worker = worker;
-                            best_load = load;
-                        }
-                    }
-
+                for (const auto &pair : assignment.worker_pairs[worker]) {
+                    const std::size_t i = static_cast<std::size_t>(pair.first);
+                    const std::size_t j = static_cast<std::size_t>(pair.second);
                     const std::size_t pair_index =
                         pairFrontierIndex(i, j, paths.size());
-                    worker_pairs[best_worker].push_back(
-                        WorkPair{i, j, pair_index});
+                    worker_pairs[worker].push_back(WorkPair{i, j, pair_index});
                 }
             }
         } else {
@@ -2102,6 +2112,10 @@ private:
 
                 std::vector<RawConflictCandidate> raw_candidates;
                 ProcessScanResultHeader result;
+                double build_worker_wall_seconds = 0.0;
+                double build_worker_cpu_seconds = 0.0;
+                double collision_worker_wall_seconds = 0.0;
+                double collision_worker_cpu_seconds = 0.0;
                 const std::size_t segment_begin =
                     static_cast<std::size_t>(command.segment_begin);
                 const std::size_t segment_end =
@@ -2115,8 +2129,9 @@ private:
                 eligible_pairs.reserve(worker_pairs[worker_index].size());
 
                 for (const auto &pair : worker_pairs[worker_index]) {
-                    if (claimed_robots[pair.robot_i] ||
-                        claimed_robots[pair.robot_j]) {
+                    if (optimistic_unique &&
+                        (claimed_robots[pair.robot_i] ||
+                         claimed_robots[pair.robot_j])) {
                         continue;
                     }
 
@@ -2133,8 +2148,14 @@ private:
                 std::vector<char> pair_has_candidate(
                     effective_pair_starts.size(), 0);
                 const auto &local_robots = worker_robots[worker_index];
+                const auto pack_build_wall_start = Clock::now();
+                const double pack_build_cpu_start = processCpuSeconds();
                 const auto packs = makeBatchPacks(
                     segment_begin, segment_end, VampBatchPacking::Linear);
+                build_worker_wall_seconds +=
+                    elapsedWallSeconds(pack_build_wall_start);
+                build_worker_cpu_seconds +=
+                    elapsedProcessCpuSeconds(pack_build_cpu_start);
                 for (const auto &pack : packs) {
                     std::vector<PackedRobotSpheres> packed_cache(
                         local_robots.size());
@@ -2149,9 +2170,15 @@ private:
                                 "intermediate slot");
                         }
                         if (!packed_cached[local_slot]) {
+                            const auto build_wall_start = Clock::now();
+                            const double build_cpu_start = processCpuSeconds();
                             packed_cache[local_slot] =
                                 buildPackedRobotSpheresForPack(
                                     *robots[robot], paths[robot], pack);
+                            build_worker_wall_seconds +=
+                                elapsedWallSeconds(build_wall_start);
+                            build_worker_cpu_seconds +=
+                                elapsedProcessCpuSeconds(build_cpu_start);
                             packed_cached[local_slot] = 1;
                         }
                         return packed_cache[local_slot];
@@ -2160,26 +2187,47 @@ private:
                     const std::size_t pack_last = pack.timesteps[pack.lanes - 1];
                     for (const auto &eligible : eligible_pairs) {
                         const WorkPair &pair = *eligible.pair;
-                        if (pair_has_candidate[pair.pair_index])
+                        if (optimistic_unique &&
+                            pair_has_candidate[pair.pair_index])
                             continue;
                         if (eligible.scan_begin > pack_last)
                             continue;
 
                         const auto &spheres_i = packedFor(pair.robot_i);
                         const auto &spheres_j = packedFor(pair.robot_j);
-                        const auto timestep = earliestPackedSphereConflictTimestep(
-                            spheres_i, spheres_j, pack, eligible.scan_begin);
-                        if (!timestep)
-                            continue;
-                        raw_candidates.push_back(RawConflictCandidate{
-                            static_cast<std::uint64_t>(pair.pair_index),
-                            static_cast<std::uint64_t>(pair.robot_i),
-                            static_cast<std::uint64_t>(pair.robot_j),
-                            static_cast<std::uint64_t>(*timestep)});
-                        pair_has_candidate[pair.pair_index] = 1;
+                        std::size_t scan_begin = eligible.scan_begin;
+                        while (scan_begin <= pack_last) {
+                            const auto collision_wall_start = Clock::now();
+                            const double collision_cpu_start =
+                                processCpuSeconds();
+                            const auto timestep =
+                                earliestPackedSphereConflictTimestep(
+                                    spheres_i, spheres_j, pack, scan_begin);
+                            collision_worker_wall_seconds +=
+                                elapsedWallSeconds(collision_wall_start);
+                            collision_worker_cpu_seconds +=
+                                elapsedProcessCpuSeconds(collision_cpu_start);
+                            if (!timestep)
+                                break;
+                            raw_candidates.push_back(RawConflictCandidate{
+                                static_cast<std::uint64_t>(pair.pair_index),
+                                static_cast<std::uint64_t>(pair.robot_i),
+                                static_cast<std::uint64_t>(pair.robot_j),
+                                static_cast<std::uint64_t>(*timestep)});
+                            pair_has_candidate[pair.pair_index] = 1;
+                            if (optimistic_unique)
+                                break;
+                            scan_begin = *timestep + 1;
+                        }
                     }
                 }
                 result.candidate_count = raw_candidates.size();
+                result.build_worker_wall_seconds = build_worker_wall_seconds;
+                result.build_worker_cpu_seconds = build_worker_cpu_seconds;
+                result.collision_worker_wall_seconds =
+                    collision_worker_wall_seconds;
+                result.collision_worker_cpu_seconds =
+                    collision_worker_cpu_seconds;
                 if (!writeValue(fd, result))
                     return 2;
                 if (!raw_candidates.empty() &&
@@ -2338,6 +2386,18 @@ private:
                                 "Process-parallel VAMP conflict finder result "
                                 "read failed");
                         }
+                        if (options.temporary_conflict_find_instrumentation) {
+                            // TEMP(ablation): remove this accumulation once
+                            // the conflict-detection timing table is no longer
+                            // needed for reproduction work.
+                            options.temporary_conflict_find_instrumentation
+                                ->recordWorkerResult(
+                                    worker_index,
+                                    result.build_worker_wall_seconds,
+                                    result.build_worker_cpu_seconds,
+                                    result.collision_worker_wall_seconds,
+                                    result.collision_worker_cpu_seconds);
+                        }
                         std::vector<RawConflictCandidate> raw_candidates(
                             static_cast<std::size_t>(result.candidate_count));
                         if (!raw_candidates.empty() &&
@@ -2416,16 +2476,18 @@ private:
 
                 for (const auto &candidate : candidates) {
                     const auto &conflict = candidate.conflict;
-                    if (robot_used[static_cast<std::size_t>(
-                            conflict.robot_i)] ||
-                        robot_used[static_cast<std::size_t>(
-                            conflict.robot_j)]) {
+                    if (optimistic_unique &&
+                        (robot_used[static_cast<std::size_t>(
+                             conflict.robot_i)] ||
+                         robot_used[static_cast<std::size_t>(
+                             conflict.robot_j)])) {
                         continue;
                     }
                     if (acceptInterRobotConflictCandidate(
                             conflict, on_conflict, true, robot_used, out,
-                            accepted_claims)) {
-                        if (next_t_begin_by_pair_out &&
+                            accepted_claims,
+                            options.inter_robot_conflict_batch_mode)) {
+                        if (optimistic_unique && next_t_begin_by_pair_out &&
                             !pair_has_accepted[candidate.pair_index]) {
                             (*next_t_begin_by_pair_out)
                                 [candidate.pair_index] = conflict.timestep;
@@ -2452,7 +2514,7 @@ private:
                     }
                 }
 
-                if (next_t_begin_by_pair_out) {
+                if (optimistic_unique && next_t_begin_by_pair_out) {
                     for (const auto &pairs : worker_pairs) {
                         for (const auto &pair : pairs) {
                             if (pair_has_accepted[pair.pair_index])

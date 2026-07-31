@@ -193,6 +193,39 @@ parseParallelArcConflictFindAssignment(const std::string &value) {
         "Unknown ParallelARC conflict-find assignment: " + value);
 }
 
+inline comotion::InterRobotConflictBatchMode
+parseParallelArcConflictBatchMode(const std::string &value) {
+    const std::string lowered = lowerAscii(value);
+    if (lowered == "optimistic" ||
+        lowered == "optimistic_independent" ||
+        lowered == "optimistic-independent")
+        return comotion::InterRobotConflictBatchMode::OptimisticIndependent;
+    if (lowered == "independent_only" ||
+        lowered == "independent-only" ||
+        lowered == "strict" ||
+        lowered == "strict_independent" ||
+        lowered == "strict-independent")
+        return comotion::InterRobotConflictBatchMode::IndependentOnly;
+    throw std::runtime_error(
+        "Unknown ParallelARC conflict batch mode: " + value);
+}
+
+template <typename Options>
+auto parallelArcConflictBatchModeValueImpl(const Options &options, int)
+    -> decltype(options.parallel_arc_conflict_batch_mode) {
+    return options.parallel_arc_conflict_batch_mode;
+}
+
+template <typename Options>
+std::string parallelArcConflictBatchModeValueImpl(const Options &, long) {
+    return "optimistic";
+}
+
+template <typename Options>
+std::string parallelArcConflictBatchModeValue(const Options &options) {
+    return parallelArcConflictBatchModeValueImpl(options, 0);
+}
+
 inline comotion::StrrtRewiring parseStrrtRewiring(const std::string &value) {
     const std::string lowered = lowerAscii(value);
     if (lowered == "off")
@@ -612,6 +645,8 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
             planner->setConflictFindAssignment(
                 parseParallelArcConflictFindAssignment(
                     options.parallel_arc_conflict_find_assignment));
+            planner->setConflictBatchMode(parseParallelArcConflictBatchMode(
+                parallelArcConflictBatchModeValue(options)));
             return planner;
         };
         return blueprint;

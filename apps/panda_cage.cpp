@@ -113,7 +113,9 @@ struct AppOptions {
     std::string parallel_arc_conflict_strategy = "greedy";
     std::string parallel_arc_conflict_find_mode = "segment_parallel";
     std::string parallel_arc_conflict_find_assignment = "auto";
+    std::string parallel_arc_conflict_batch_mode = "optimistic";
     std::size_t parallel_arc_conflict_find_horizon = 200;
+    bool parallel_arc_conflict_ablation_only = false;
     int stcbs_max_ct_nodes = 5000;
     int stcbs_max_samples = 75000;
 };
@@ -855,6 +857,80 @@ TrialMetrics runPlanner(const GeneratedScenario &generated,
     return metrics;
 }
 
+TrialMetrics runParallelArcConflictAblation(
+    const GeneratedScenario &generated, const AppOptions &options,
+    const json &benchmark_context,
+    const std::shared_ptr<comotion::MultiRobotProblem> &problem,
+    const std::shared_ptr<comotion::ParallelARC> &planner,
+    const std::string &planner_name) {
+    comotion::seedOmplGlobalFromUserPlanningSeed(options.seed);
+    planner->setPlanningSeed(options.seed);
+    planner->setProblem(problem);
+
+    if (g_app_verbose)
+        std::cout << "Running fair conflict-detection ablation for "
+                  << planner_name << "\n";
+
+    const bool completed =
+        planner->runConflictDetectionAblation(options.time_limit);
+    json planner_stats = planner->plannerStatsJson();
+    double conflict_detection_wall_seconds = 0.0;
+    if (planner_stats.contains("conflict_detection_times_seconds_wall_clock") &&
+        planner_stats["conflict_detection_times_seconds_wall_clock"]
+            .is_number()) {
+        conflict_detection_wall_seconds =
+            planner_stats["conflict_detection_times_seconds_wall_clock"]
+                .get<double>();
+    }
+    double conflict_detection_tree_cpu_seconds = 0.0;
+    if (planner_stats.contains("temporary_conflict_find_timing") &&
+        planner_stats["temporary_conflict_find_timing"].is_object()) {
+        const auto &temporary = planner_stats["temporary_conflict_find_timing"];
+        if (temporary.contains("process_tree_cpu_seconds_total") &&
+            temporary["process_tree_cpu_seconds_total"].is_number()) {
+            conflict_detection_tree_cpu_seconds =
+                temporary["process_tree_cpu_seconds_total"].get<double>();
+        }
+    }
+
+    TrialMetrics metrics;
+    metrics.planner = planner_name;
+    metrics.collision_backend =
+        backendName(problem->collisionChecker().backend());
+    metrics.planner_status =
+        completed
+            ? "ParallelARC conflict-detection ablation completed"
+            : "ParallelARC conflict-detection ablation timed out while generating initial paths";
+    metrics.success = completed;
+    metrics.planning_time_seconds = conflict_detection_wall_seconds;
+    metrics.solve_time_seconds = conflict_detection_wall_seconds;
+    metrics.compute_time_seconds = conflict_detection_tree_cpu_seconds;
+    metrics.sum_of_cost_timesteps = planner->sumOfCostTimesteps()
+                                        ? json(*planner->sumOfCostTimesteps())
+                                        : json(nullptr);
+    metrics.makespan_timesteps = planner->makespanTimesteps()
+                                     ? json(*planner->makespanTimesteps())
+                                     : json(nullptr);
+    metrics.planner_stats = std::move(planner_stats);
+    metrics.benchmark_context = benchmark_context;
+    metrics.solution_summary = common::solutionSummaryJson(metrics);
+
+    std::cout << "Conflict-detection wall time: "
+              << conflict_detection_wall_seconds << " seconds\n";
+    std::cout << "Conflict-detection compute time: "
+              << conflict_detection_tree_cpu_seconds << " seconds\n";
+
+    if (options.metrics_json_path) {
+        writeJson(metrics.toJson(), *options.metrics_json_path, 0);
+    }
+    if (options.output_paths && g_app_verbose) {
+        std::cout << "Conflict-detection ablation mode skips path artifacts; "
+                     "the measured object is the initial single conflict scan\n";
+    }
+
+    return metrics;
+}
+
 void printUsage(const char *prog) {
     std::cout
         << "Usage: " << prog
@@ -923,7 +999,11 @@ void printUsage(const char *prog) {
         << "  --parallel-arc-conflict-strategy <greedy|spatial_distribution>\n"
         << "  --parallel-arc-conflict-find-mode <sequential|segment_parallel>\n"
         << "  --parallel-arc-conflict-find-assignment <auto|pair_cover|all_robots_round_robin>\n"
+        << "  --parallel-arc-conflict-batch-mode <optimistic|independent_only>\n"
         << "  --parallel-arc-conflict-find-horizon <n>\n"
+        << "  --parallel-arc-conflict-ablation-only\n"
+        << "                         Generate initial individual paths, then time only one\n"
+        << "                         ParallelARC conflict-detection call on those fixed paths\n"
         << "  --exit-nonzero-without-exact-solution\n"
         << "  --verbose\n";
 }
@@ -1097,10 +1177,15 @@ AppOptions parseArgs(int argc, char **argv) {
         } else if (arg == "--parallel-arc-conflict-find-assignment") {
             options.parallel_arc_conflict_find_assignment =
                 requireValue(i, argc, argv, arg);
+        } else if (arg == "--parallel-arc-conflict-batch-mode") {
+            options.parallel_arc_conflict_batch_mode =
+                requireValue(i, argc, argv, arg);
         } else if (arg == "--parallel-arc-conflict-find-horizon") {
             options.parallel_arc_conflict_find_horizon =
                 static_cast<std::size_t>(
                     std::stoull(requireValue(i, argc, argv, arg)));
+        } else if (arg == "--parallel-arc-conflict-ablation-only") {
+            options.parallel_arc_conflict_ablation_only = true;
         } else if (arg == "--stcbs-max-ct-nodes") {
             options.stcbs_max_ct_nodes =
                 std::stoi(requireValue(i, argc, argv, arg));
@@ -1190,6 +1275,18 @@ AppOptions parseArgs(int argc, char **argv) {
             "--parallel-arc-conflict-find-horizon must be at least 1 for "
             "segment_parallel mode");
     }
+    if (options.parallel_arc_conflict_ablation_only) {
+        if (options.algorithm != "parallel_arc") {
+            throw std::runtime_error(
+                "--parallel-arc-conflict-ablation-only requires "
+                "--algorithm parallel_arc");
+        }
+        if (options.or_parallel_worker_processes != 1) {
+            throw std::runtime_error(
+                "--parallel-arc-conflict-ablation-only does not support "
+                "outer OR parallelism");
+        }
+    }
     if (options.stcbs_max_ct_nodes < 1)
         throw std::runtime_error("--stcbs-max-ct-nodes must be at least 1");
     if (options.stcbs_max_samples < 1)
@@ -1270,8 +1367,13 @@ int main(int argc, char **argv) {
         }
 
         const TrialMetrics metrics =
-            runPlanner(generated, options, context, problem, planner,
-                       planner_name, visual_urdf, collision_urdf, srdf);
+            options.parallel_arc_conflict_ablation_only
+                ? runParallelArcConflictAblation(
+                      generated, options, context, problem,
+                      std::dynamic_pointer_cast<comotion::ParallelARC>(planner),
+                      planner_name)
+                : runPlanner(generated, options, context, problem, planner,
+                             planner_name, visual_urdf, collision_urdf, srdf);
         if (options.exit_nonzero_without_exact_solution && !metrics.success)
             return 1;
         return 0;

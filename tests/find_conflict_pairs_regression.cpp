@@ -451,6 +451,74 @@ bool sameConflicts(const std::vector<comotion::SubproblemConflict> &lhs,
     return true;
 }
 
+bool testIndependentOnlyRejectsOptimisticConflictChain() {
+    constexpr std::size_t kLength = 32;
+    std::vector<std::shared_ptr<comotion::RobotModel>> robots;
+    for (int i = 0; i < 4; ++i)
+        robots.push_back(makeSphereRobot());
+
+    std::vector<comotion::Path> paths;
+    paths.push_back(makeConstantPath(kLength, {0.0, 0.0, 0.0}));
+    paths.push_back(makeConstantPath(kLength, {100.0, 0.0, 0.0}));
+    paths.push_back(makeConstantPath(kLength, {200.0, 0.0, 0.0}));
+    paths.push_back(makeConstantPath(kLength, {300.0, 0.0, 0.0}));
+
+    paths[1][10] = {0.0, 0.0, 0.0};
+    paths[2][11] = {0.0, 0.0, 0.0};
+    paths[3][12] = {200.0, 0.0, 0.0};
+
+    std::vector<const comotion::RobotModel *> ptrs;
+    ptrs.reserve(robots.size());
+    for (const auto &robot : robots)
+        ptrs.push_back(robot.get());
+
+    comotion::CompositePathValidationOptions optimistic_options;
+    optimistic_options.check_environment = false;
+
+    comotion::CollisionChecker collision_checker(
+        comotion::CollisionChecker::Backend::Spheres);
+    comotion::ConflictChecker checker(collision_checker);
+
+    const auto optimistic_conflicts = checker.findConflicts(
+        paths, ptrs, optimistic_options, 0, 4, true);
+    if (!expectTrue("optimistic batch admits later independent chain conflict",
+                    optimistic_conflicts.size() == 2)) {
+        return false;
+    }
+    if (!expectTrue("optimistic chain conflict reaches newly claimed robot",
+                    optimistic_conflicts[1].robots ==
+                        std::vector<int>({2, 3}))) {
+        return false;
+    }
+
+    auto independent_options = optimistic_options;
+    independent_options.inter_robot_conflict_batch_mode =
+        comotion::InterRobotConflictBatchMode::IndependentOnly;
+    const auto independent_conflicts = checker.findConflicts(
+        paths, ptrs, independent_options, 0, 4, true);
+    if (!expectTrue("independent-only batch rejects conflict chain",
+                    independent_conflicts.size() == 1)) {
+        return false;
+    }
+    if (!expectTrue("independent-only keeps earliest chain seed conflict",
+                    independent_conflicts[0].robots ==
+                        std::vector<int>({0, 1}))) {
+        return false;
+    }
+
+    independent_options.conflict_find_parallel_workers = 2;
+    independent_options.conflict_find_parallel_horizon = 16;
+    const auto parallel_independent_conflicts = checker.findConflicts(
+        paths, ptrs, independent_options, 0, 4, true);
+    if (!expectTrue("parallel independent-only rejects conflict chain",
+                    parallel_independent_conflicts.size() == 1)) {
+        return false;
+    }
+    return expectTrue("parallel independent-only matches earliest chain seed",
+                      parallel_independent_conflicts[0].robots ==
+                          std::vector<int>({0, 1}));
+}
+
 std::vector<std::pair<comotion::ConflictFindParallelAssignment, const char *>>
 assignmentModes() {
     return {
@@ -913,6 +981,8 @@ int main() {
     if (!testFindConflictPairsPerPairStarts())
         return 1;
     if (!testFindConflictPairsPerPairProgressAndUniqueSkips())
+        return 1;
+    if (!testIndependentOnlyRejectsOptimisticConflictChain())
         return 1;
     if (!testSegmentParallelFindConflictsMatchesSequential())
         return 1;

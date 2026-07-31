@@ -168,6 +168,84 @@ bool validateCanonicalLightestAssignment(int n, int bucket_count,
     return true;
 }
 
+bool validateConflictAssignment(int n, int worker_count,
+                                int max_worker_robot_bound,
+                                int max_pair_load_bound) {
+    const auto assignment =
+        comotion::pairCoverConflictAssignment(n, worker_count);
+    if (!expectTrue("conflict assignment worker count",
+                    static_cast<int>(assignment.worker_robots.size()) ==
+                            worker_count &&
+                        static_cast<int>(assignment.worker_pairs.size()) ==
+                            worker_count)) {
+        return false;
+    }
+
+    std::vector<std::vector<char>> assigned(
+        static_cast<std::size_t>(n),
+        std::vector<char>(static_cast<std::size_t>(n), 0));
+    int total_assigned = 0;
+    for (int worker = 0; worker < worker_count; ++worker) {
+        const auto &robots = assignment.worker_robots[static_cast<std::size_t>(
+            worker)];
+        const auto &pairs = assignment.worker_pairs[static_cast<std::size_t>(
+            worker)];
+        if (!expectTrue("conflict assignment worker robot bound",
+                        static_cast<int>(robots.size()) <=
+                            max_worker_robot_bound)) {
+            return false;
+        }
+        if (!expectTrue("conflict assignment pair load bound",
+                        static_cast<int>(pairs.size()) <=
+                            max_pair_load_bound)) {
+            return false;
+        }
+
+        std::vector<char> robot_present(static_cast<std::size_t>(n), 0);
+        for (int robot : robots) {
+            if (!expectTrue("conflict assignment robot range",
+                            robot >= 0 && robot < n)) {
+                return false;
+            }
+            robot_present[static_cast<std::size_t>(robot)] = 1;
+        }
+
+        for (const auto &pair : pairs) {
+            if (!expectTrue("conflict assignment pair range",
+                            pair.first >= 0 && pair.first < n &&
+                                pair.second >= 0 && pair.second < n &&
+                                pair.first < pair.second)) {
+                return false;
+            }
+            if (!expectTrue("conflict assignment pair endpoints local",
+                            robot_present[static_cast<std::size_t>(pair.first)] !=
+                                    0 &&
+                                robot_present[static_cast<std::size_t>(
+                                    pair.second)] != 0)) {
+                return false;
+            }
+            ++assigned[static_cast<std::size_t>(pair.first)]
+                      [static_cast<std::size_t>(pair.second)];
+            ++total_assigned;
+        }
+    }
+
+    if (!expectTrue("conflict assignment total pairs",
+                    total_assigned == n * (n - 1) / 2)) {
+        return false;
+    }
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            if (!expectTrue("conflict assignment covers pair exactly once",
+                            assigned[static_cast<std::size_t>(i)]
+                                    [static_cast<std::size_t>(j)] == 1)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -189,6 +267,10 @@ int main() {
     if (!validateCanonicalLightestAssignment(128, 4, 77, 2035))
         return 1;
     if (!validateCanonicalLightestAssignment(128, 8, 54, 1048))
+        return 1;
+    if (!validateConflictAssignment(8, 16, 3, 2))
+        return 1;
+    if (!validateConflictAssignment(64, 16, 20, 126))
         return 1;
 
     if (!expectInvalid(1, 8))

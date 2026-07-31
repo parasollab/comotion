@@ -18,6 +18,10 @@ enum class ConflictFindParallelAssignment {
     PairCover,
     AllRobotsRoundRobin,
 };
+enum class InterRobotConflictBatchMode {
+    OptimisticIndependent,
+    IndependentOnly,
+};
 
 struct VampValidationStrategy {
     VampBatchOrdering ordering = VampBatchOrdering::Combined;
@@ -58,6 +62,76 @@ struct InterRobotConflictDecision {
 using InterRobotConflictCallback =
     std::function<InterRobotConflictDecision(const CompositeConflict &)>;
 
+struct TemporaryConflictFindInstrumentation {
+    double build_worker_wall_seconds = 0.0;
+    double build_worker_cpu_seconds = 0.0;
+    double collision_worker_wall_seconds = 0.0;
+    double collision_worker_cpu_seconds = 0.0;
+    std::vector<double> build_worker_wall_seconds_by_worker;
+    std::vector<double> collision_worker_wall_seconds_by_worker;
+
+    void recordWorkerResult(std::size_t worker_index,
+                            double worker_build_wall_seconds,
+                            double worker_build_cpu_seconds,
+                            double worker_collision_wall_seconds,
+                            double worker_collision_cpu_seconds) {
+        build_worker_wall_seconds += worker_build_wall_seconds;
+        build_worker_cpu_seconds += worker_build_cpu_seconds;
+        collision_worker_wall_seconds += worker_collision_wall_seconds;
+        collision_worker_cpu_seconds += worker_collision_cpu_seconds;
+        if (worker_index >= build_worker_wall_seconds_by_worker.size()) {
+            build_worker_wall_seconds_by_worker.resize(worker_index + 1, 0.0);
+            collision_worker_wall_seconds_by_worker.resize(worker_index + 1,
+                                                           0.0);
+        }
+        build_worker_wall_seconds_by_worker[worker_index] +=
+            worker_build_wall_seconds;
+        collision_worker_wall_seconds_by_worker[worker_index] +=
+            worker_collision_wall_seconds;
+    }
+
+    int criticalWorkerIndex() const {
+        if (build_worker_wall_seconds_by_worker.empty())
+            return -1;
+        std::size_t best_index = 0;
+        double best_total = build_worker_wall_seconds_by_worker[0] +
+                            collision_worker_wall_seconds_by_worker[0];
+        for (std::size_t worker_index = 1;
+             worker_index < build_worker_wall_seconds_by_worker.size();
+             ++worker_index) {
+            const double worker_total =
+                build_worker_wall_seconds_by_worker[worker_index] +
+                collision_worker_wall_seconds_by_worker[worker_index];
+            if (worker_total > best_total) {
+                best_total = worker_total;
+                best_index = worker_index;
+            }
+        }
+        return static_cast<int>(best_index);
+    }
+
+    double criticalWorkerBuildWallSeconds() const {
+        const int worker_index = criticalWorkerIndex();
+        return worker_index < 0
+                   ? 0.0
+                   : build_worker_wall_seconds_by_worker[static_cast<std::size_t>(
+                         worker_index)];
+    }
+
+    double criticalWorkerCollisionWallSeconds() const {
+        const int worker_index = criticalWorkerIndex();
+        return worker_index < 0
+                   ? 0.0
+                   : collision_worker_wall_seconds_by_worker
+                         [static_cast<std::size_t>(worker_index)];
+    }
+
+    double criticalWorkerTotalWallSeconds() const {
+        return criticalWorkerBuildWallSeconds() +
+               criticalWorkerCollisionWallSeconds();
+    }
+};
+
 struct CompositePathValidationOptions {
     bool check_environment = true;
     int discrete_num_checks_hint = -1;
@@ -69,7 +143,13 @@ struct CompositePathValidationOptions {
     std::size_t conflict_find_parallel_horizon = 0;
     ConflictFindParallelAssignment conflict_find_parallel_assignment =
         ConflictFindParallelAssignment::Auto;
+    InterRobotConflictBatchMode inter_robot_conflict_batch_mode =
+        InterRobotConflictBatchMode::OptimisticIndependent;
     std::function<bool()> stop_requested;
+    // TEMP(ablation): remove this once the conflict-detection table
+    // reproduction no longer needs build-vs-collision timing.
+    TemporaryConflictFindInstrumentation *temporary_conflict_find_instrumentation =
+        nullptr;
 };
 
 inline bool usePairCoverConflictAssignment(

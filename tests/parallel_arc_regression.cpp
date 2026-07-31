@@ -208,6 +208,11 @@ bool testParallelArcSolvesIndependentConflicts() {
                 "parallel_arc_conflict_find_logical_bucket_count", 0) == 2)) {
         return false;
     }
+    if (!expectTrue("ParallelARC default optimistic conflict batch mode",
+                    planner_json.value("parallel_arc_conflict_batch_mode",
+                                       "") == "optimistic_independent")) {
+        return false;
+    }
     if (!expectTrue("ParallelARC repair OR parallelism enabled",
                     planner_json.value("parallel_arc_repair_or_parallelism",
                                        false))) {
@@ -531,6 +536,8 @@ bool testParallelArcSegmentParallelConflictFindSolves() {
         comotion::ParallelArcConflictSelectionStrategy::Greedy);
     planner.setConflictFindMode(
         comotion::ParallelArcConflictFindMode::SegmentParallel);
+    planner.setConflictBatchMode(
+        comotion::InterRobotConflictBatchMode::IndependentOnly);
     planner.setConflictFindHorizon(4);
     planner.setInitialWindow(12);
     planner.setExpansionStep(12);
@@ -584,6 +591,11 @@ bool testParallelArcSegmentParallelConflictFindSolves() {
             planner_json.value(
                 "parallel_arc_conflict_find_assignment_strategy", "") ==
                 "round_robin_pairs")) {
+        return false;
+    }
+    if (!expectTrue("ParallelARC segment-parallel stats conflict batch mode",
+                    planner_json.value("parallel_arc_conflict_batch_mode",
+                                       "") == "independent_only")) {
         return false;
     }
     return expectTrue(

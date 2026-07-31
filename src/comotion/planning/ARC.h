@@ -139,6 +139,11 @@ protected:
         std::uint64_t subproblem_batches = 0;
     };
 
+    struct ProcessTreeCpuUsageSnapshot {
+        double self_seconds = 0.0;
+        double children_seconds = 0.0;
+    };
+
     using Clock = std::chrono::steady_clock;
 
     struct RepairWindow {
@@ -226,6 +231,21 @@ protected:
         const ArcPlannerStatsSummary &summary,
         const std::vector<double> *conflict_resolution_times_seconds = nullptr,
         const std::vector<double> *conflict_detection_times_seconds = nullptr);
+    static ProcessTreeCpuUsageSnapshot processTreeCpuUsageSnapshot();
+    static double elapsedProcessTreeCpuSeconds(
+        const ProcessTreeCpuUsageSnapshot &start,
+        const ProcessTreeCpuUsageSnapshot &finish);
+    static nlohmann::json temporaryConflictFindTimingJson(
+        const std::vector<double> &main_process_wall_seconds,
+        const std::vector<double> &process_tree_cpu_seconds,
+        const std::vector<double> &build_worker_wall_seconds,
+        const std::vector<double> &build_worker_cpu_seconds,
+        const std::vector<double> &collision_worker_wall_seconds,
+        const std::vector<double> &collision_worker_cpu_seconds,
+        const std::vector<int> &critical_worker_index,
+        const std::vector<double> &critical_worker_build_wall_seconds,
+        const std::vector<double> &critical_worker_collision_wall_seconds,
+        const std::vector<double> &critical_worker_total_wall_seconds);
 
     void initializeConflictScanStarts(std::size_t robot_count);
     CompositePathValidationOptions conflictScanOptions() const;
@@ -297,6 +317,19 @@ protected:
     double local_composite_simplification_times_seconds_wall_clock_ = 0.0;
     std::vector<double> conflict_detection_times_seconds_;
     std::vector<double> conflict_detection_times_cpu_seconds_;
+    // TEMP(ablation): remove these once the conflict-detection table
+    // reproduction no longer needs per-round worker build/collision timing.
+    std::vector<double> temporary_conflict_find_main_process_wall_seconds_;
+    std::vector<double> temporary_conflict_find_process_tree_cpu_seconds_;
+    std::vector<double> temporary_conflict_find_build_worker_wall_seconds_;
+    std::vector<double> temporary_conflict_find_build_worker_cpu_seconds_;
+    std::vector<double> temporary_conflict_find_collision_worker_wall_seconds_;
+    std::vector<double> temporary_conflict_find_collision_worker_cpu_seconds_;
+    std::vector<int> temporary_conflict_find_critical_worker_index_;
+    std::vector<double> temporary_conflict_find_critical_worker_build_wall_seconds_;
+    std::vector<double>
+        temporary_conflict_find_critical_worker_collision_wall_seconds_;
+    std::vector<double> temporary_conflict_find_critical_worker_total_wall_seconds_;
     std::vector<double> conflict_resolution_times_seconds_;
     std::vector<double> conflict_resolution_times_cpu_seconds_;
 };

@@ -117,7 +117,9 @@ inline bool acceptInterRobotConflictCandidate(
     const CompositeConflict &conflict,
     const InterRobotConflictCallback &on_conflict, bool unique,
     std::vector<char> &robot_used, std::vector<CompositeConflict> &out,
-    std::vector<AcceptedInterRobotConflictClaim> &accepted_claims) {
+    std::vector<AcceptedInterRobotConflictClaim> &accepted_claims,
+    InterRobotConflictBatchMode batch_mode =
+        InterRobotConflictBatchMode::OptimisticIndependent) {
     InterRobotConflictDecision decision;
     if (on_conflict)
         decision = on_conflict(conflict);
@@ -137,6 +139,7 @@ inline bool acceptInterRobotConflictCandidate(
                     decision.robots_to_claim.end()),
         decision.robots_to_claim.end());
 
+    bool overlaps_used_robot = false;
     for (const int robot : decision.robots_to_claim) {
         if (robot < 0 ||
             static_cast<std::size_t>(robot) >= robot_used.size()) {
@@ -144,7 +147,15 @@ inline bool acceptInterRobotConflictCandidate(
                 "Inter-robot conflict claimed robot index out of range");
         }
         if (unique && robot_used[static_cast<std::size_t>(robot)])
-            return false;
+            overlaps_used_robot = true;
+    }
+
+    if (unique && overlaps_used_robot) {
+        if (batch_mode == InterRobotConflictBatchMode::IndependentOnly) {
+            for (const int robot : decision.robots_to_claim)
+                robot_used[static_cast<std::size_t>(robot)] = 1;
+        }
+        return false;
     }
 
     out.push_back(conflict);

@@ -290,6 +290,7 @@ PAPER_CONFLICT_ABLATION_CASES = (
     "mobile_parallel_n64",
     "planar_cross_n64",
 )
+PAPER_OPTIMISTIC_CONFLICT_ABLATION_CASES = ("panda_cage_n8",)
 
 CASE_GROUPS: dict[str, tuple[str, ...]] = {
     "paper": PAPER_PARALLEL_ARC_CASES,
@@ -304,6 +305,9 @@ CASE_GROUPS: dict[str, tuple[str, ...]] = {
     "paper_panda": PAPER_PANDA_CAGE_CASES,
     "paper_panda_cage": PAPER_PANDA_CAGE_CASES,
     "paper_conflict_ablation": PAPER_CONFLICT_ABLATION_CASES,
+    "paper_optimistic_conflict_ablation": (
+        PAPER_OPTIMISTIC_CONFLICT_ABLATION_CASES
+    ),
 }
 
 PLANNER_LABELS = {
@@ -631,6 +635,7 @@ def paper_conflict_horizon_variants() -> list[PlannerVariant]:
                 "pair_cover",
                 "--parallel-arc-conflict-find-horizon",
                 str(horizon),
+                "--parallel-arc-conflict-ablation-only",
             ),
         )
         for horizon in PAPER_CONFLICT_FIND_HORIZONS
@@ -649,6 +654,7 @@ def paper_conflict_assignment_variants() -> list[PlannerVariant]:
                 "--parallel-arc-initial-solution-or",
                 "--parallel-arc-conflict-find-assignment",
                 "all_robots_round_robin",
+                "--parallel-arc-conflict-ablation-only",
             ),
         ),
         PlannerVariant(
@@ -661,6 +667,39 @@ def paper_conflict_assignment_variants() -> list[PlannerVariant]:
                 "--parallel-arc-initial-solution-or",
                 "--parallel-arc-conflict-find-assignment",
                 "pair_cover",
+                "--parallel-arc-conflict-ablation-only",
+            ),
+        ),
+    ]
+
+
+def paper_optimistic_conflict_ablation_variants() -> list[PlannerVariant]:
+    base_args = (
+        "--parallel-arc-worker-processes",
+        str(PAPER_PARALLEL_ARC_TOTAL_WORKERS),
+        "--parallel-arc-initial-solution-or",
+        "--parallel-arc-conflict-find-assignment",
+        "pair_cover",
+    )
+    return [
+        PlannerVariant(
+            label="P-ARC-16-optimistic",
+            algorithm="parallel_arc",
+            slug="p_arc_16_optimistic",
+            extra_args=(
+                *base_args,
+                "--parallel-arc-conflict-batch-mode",
+                "optimistic",
+            ),
+        ),
+        PlannerVariant(
+            label="P-ARC-16-independent-only",
+            algorithm="parallel_arc",
+            slug="p_arc_16_independent_only",
+            extra_args=(
+                *base_args,
+                "--parallel-arc-conflict-batch-mode",
+                "independent_only",
             ),
         ),
     ]

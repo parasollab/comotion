@@ -128,6 +128,22 @@ or `--variant-set paper-or-pp-strrt` to run only that baseline.
 Conflict-detection ablation helpers are available as `paper-horizon-ablation`
 and `paper-assignment-ablation`.
 
+The optimistic-conflict batching ablation runs full P-ARC planning trials on
+the 8-robot Panda Cage benchmark and preserves per-trial metrics JSON so
+conflict-detection time can be summarized from whole planning runs:
+
+```bash
+python3 benchmarks/scripts/run_parallel_arc_optimistic_ablation.py \
+  --num-seeds 10 \
+  --task-indices 0,1,2,3,4 \
+  --time-limit 100 \
+  --jobs 1
+```
+
+This writes `optimistic_conflict_ablation_summary.csv` with planning time,
+conflict-detection wall/CPU time, conflict-detection fraction of total runtime,
+and conflict-round batch-size diagnostics.
+
 ## Case Catalog
 
 The runners expose these benchmark cases:
