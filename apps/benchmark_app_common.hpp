@@ -686,6 +686,27 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
             auto planner = std::make_shared<comotion::AOARC>();
             planner->setInitialWindow(options.arc_initial_window);
             planner->setExpansionStep(options.arc_expansion_step);
+            planner->setExpansionPolicy(
+                parseArcExpansionPolicy(options.arc_expansion_policy));
+            planner->setCustomExpansionMultipliers(
+                parseArcExpansionMultipliers(
+                    options.arc_expansion_multipliers));
+            if (options.arc_initial_valid_expansion_policy) {
+                planner->setInitialValidWindowExpansionPolicy(
+                    parseArcExpansionPolicy(
+                        *options.arc_initial_valid_expansion_policy));
+            }
+            if (options.arc_initial_valid_expansion_step) {
+                planner->setInitialValidWindowExpansionStep(
+                    *options.arc_initial_valid_expansion_step);
+            }
+            if (options.arc_initial_valid_expansion_multipliers) {
+                planner->setInitialValidWindowExpansionMultipliers(
+                    parseArcExpansionMultipliers(
+                        *options.arc_initial_valid_expansion_multipliers));
+            }
+            planner->setInitialValidWindowExpansionSymmetric(
+                options.arc_initial_valid_expansion_symmetric);
             planner->setLocalCompositeRrtMaxSamples(
                 options.arc_local_composite_max_samples);
             planner->setLocalCompositeRrtRange(
@@ -834,6 +855,27 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
             auto planner = std::make_shared<comotion::ParallelARC>();
             planner->setInitialWindow(options.arc_initial_window);
             planner->setExpansionStep(options.arc_expansion_step);
+            planner->setExpansionPolicy(
+                parseArcExpansionPolicy(options.arc_expansion_policy));
+            planner->setCustomExpansionMultipliers(
+                parseArcExpansionMultipliers(
+                    options.arc_expansion_multipliers));
+            if (options.arc_initial_valid_expansion_policy) {
+                planner->setInitialValidWindowExpansionPolicy(
+                    parseArcExpansionPolicy(
+                        *options.arc_initial_valid_expansion_policy));
+            }
+            if (options.arc_initial_valid_expansion_step) {
+                planner->setInitialValidWindowExpansionStep(
+                    *options.arc_initial_valid_expansion_step);
+            }
+            if (options.arc_initial_valid_expansion_multipliers) {
+                planner->setInitialValidWindowExpansionMultipliers(
+                    parseArcExpansionMultipliers(
+                        *options.arc_initial_valid_expansion_multipliers));
+            }
+            planner->setInitialValidWindowExpansionSymmetric(
+                options.arc_initial_valid_expansion_symmetric);
             planner->setLocalCompositeRrtMaxSamples(
                 options.arc_local_composite_max_samples);
             planner->setLocalCompositeRrtRange(

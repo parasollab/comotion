@@ -4,6 +4,7 @@ import csv
 import json
 import math
 import os
+import signal
 import statistics
 import subprocess
 import sys
@@ -836,6 +837,52 @@ def metrics_output_path(spec: TrialSpec) -> Path:
     )
 
 
+def run_command_with_process_group_timeout(
+    command: Sequence[str],
+    *,
+    timeout_seconds: float | None,
+) -> tuple[int | None, bool]:
+    """Run one trial and terminate its complete process tree on timeout.
+
+    Parallel planners fork worker processes.  ``subprocess.run(timeout=...)``
+    kills only the immediate app process, allowing its workers to become
+    orphans and consume resources during later trials.  A fresh POSIX session
+    gives every trial its own process group that can be terminated as a unit.
+    """
+    process = subprocess.Popen(
+        list(command),
+        cwd=RUNTIME_CWD,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=(os.name == "posix"),
+    )
+    try:
+        process.communicate(timeout=timeout_seconds)
+        return process.returncode, False
+    except subprocess.TimeoutExpired:
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        else:
+            process.terminate()
+
+        try:
+            process.communicate(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                process.kill()
+            process.communicate()
+        return None, True
+
+
 def run_trial(
     spec: TrialSpec,
     timeout_seconds: float | None,
@@ -851,19 +898,9 @@ def run_trial(
 
         timed_out = False
         returncode: int | None
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=RUNTIME_CWD,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
-            )
-            returncode = completed.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            returncode = None
+        returncode, timed_out = run_command_with_process_group_timeout(
+            command, timeout_seconds=timeout_seconds
+        )
 
         metrics = load_json(metrics_path)
         result_row = build_result_row(
@@ -882,19 +919,9 @@ def run_trial(
 
         timed_out = False
         returncode: int | None
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=RUNTIME_CWD,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
-            )
-            returncode = completed.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            returncode = None
+        returncode, timed_out = run_command_with_process_group_timeout(
+            command, timeout_seconds=timeout_seconds
+        )
 
         metrics = load_json(metrics_path)
 

@@ -305,6 +305,7 @@ ompl::base::PlannerStatus OrParallelPlanner::solve(double timeLimit) {
     bool killed_slower_workers = false;
     WorkerResult exact_winner;
     WorkerResult approximate_fallback;
+    nlohmann::json worker_outcomes = nlohmann::json::array();
     std::size_t remaining = states.size();
 
     while (remaining > 0) {
@@ -326,14 +327,39 @@ ompl::base::PlannerStatus OrParallelPlanner::solve(double timeLimit) {
 
         WorkerResult result;
         bool result_ok = false;
+        std::size_t result_payload_bytes = 0;
         if (WIFEXITED(wait_status) && WEXITSTATUS(wait_status) == 0) {
             std::string payload;
-            if (readBytesFromFile(state.result_path, payload) &&
+            if (readBytesFromFile(state.result_path, payload)) {
+                result_payload_bytes = payload.size();
+            }
+            if (!payload.empty() &&
                 deserializeBinary(payload, result)) {
                 result_ok = true;
             }
         }
         cleanupResultFile(state.result_path);
+
+        nlohmann::json outcome = {
+            {"worker_index", state.worker_index},
+            {"worker_seed", state.worker_seed},
+            {"result_ok", result_ok},
+            {"result_payload_bytes", result_payload_bytes},
+            {"exited", WIFEXITED(wait_status)},
+            {"exit_code", WIFEXITED(wait_status)
+                              ? nlohmann::json(WEXITSTATUS(wait_status))
+                              : nlohmann::json(nullptr)},
+            {"signaled", WIFSIGNALED(wait_status)},
+            {"signal", WIFSIGNALED(wait_status)
+                           ? nlohmann::json(WTERMSIG(wait_status))
+                           : nlohmann::json(nullptr)},
+        };
+        if (result_ok) {
+            outcome["status_type"] = result.status_type;
+            outcome["elapsed_seconds"] = result.elapsed_seconds;
+            outcome["error_message"] = result.error_message;
+        }
+        worker_outcomes.push_back(std::move(outcome));
 
         if (!result_ok)
             continue;
@@ -365,30 +391,35 @@ ompl::base::PlannerStatus OrParallelPlanner::solve(double timeLimit) {
 
     if (exact_winner_found) {
         solution_paths_ = std::move(exact_winner.solution_paths);
-        setPlannerStatsJson(withOrParallelStats(
+        auto stats = withOrParallelStats(
             parsePlannerStatsJson(exact_winner.planner_stats_json),
             base_planner_name_, worker_processes_, exact_winner.worker_index,
             exact_winner.worker_seed, exact_winner.elapsed_seconds,
-            killed_slower_workers));
+            killed_slower_workers);
+        stats["or_parallel"]["worker_outcomes"] = worker_outcomes;
+        setPlannerStatsJson(std::move(stats));
         setSolutionMetricsFromPaths(solution_paths_);
         return ompl::base::PlannerStatus::EXACT_SOLUTION;
     }
 
     if (return_approximate_if_no_exact_ && approximate_fallback_found) {
         solution_paths_ = std::move(approximate_fallback.solution_paths);
-        setPlannerStatsJson(withOrParallelStats(
+        auto stats = withOrParallelStats(
             parsePlannerStatsJson(approximate_fallback.planner_stats_json),
             base_planner_name_, worker_processes_,
             approximate_fallback.worker_index, approximate_fallback.worker_seed,
-            approximate_fallback.elapsed_seconds, false));
+            approximate_fallback.elapsed_seconds, false);
+        stats["or_parallel"]["worker_outcomes"] = worker_outcomes;
+        setPlannerStatsJson(std::move(stats));
         setSolutionMetricsFromPaths(solution_paths_);
         return ompl::base::PlannerStatus::APPROXIMATE_SOLUTION;
     }
 
-    setPlannerStatsJson(withOrParallelStats(nlohmann::json::object(),
-                                            base_planner_name_,
-                                            worker_processes_, -1, 0, 0.0,
-                                            killed_slower_workers));
+    auto stats = withOrParallelStats(nlohmann::json::object(),
+                                     base_planner_name_, worker_processes_, -1,
+                                     0, 0.0, killed_slower_workers);
+    stats["or_parallel"]["worker_outcomes"] = worker_outcomes;
+    setPlannerStatsJson(std::move(stats));
     return ompl::base::PlannerStatus::TIMEOUT;
 #endif
 }

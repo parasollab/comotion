@@ -320,6 +320,12 @@ protected:
         bool composite_invoked = false;
         bool solver_invoked = false;
         bool resolved = false;
+        std::uint32_t attempt_root_planning_seed = 0;
+        std::optional<std::uint32_t> prioritized_planning_seed;
+        std::optional<std::uint32_t> composite_planning_seed;
+        std::optional<std::uint_fast32_t> composite_state_sampler_seed;
+        std::optional<std::uint_fast32_t> composite_rrt_connect_seed;
+        std::optional<std::uint_fast32_t> composite_path_simplifier_seed;
         std::optional<std::int64_t> main_window_center_twice;
         std::optional<std::int64_t> main_base_half_width_twice;
         std::string solved_by;

@@ -138,6 +138,12 @@ if(COMOTION_BUILD_TESTS)
     add_test(NAME composite_rrt_endpoint_regression
              COMMAND composite_rrt_endpoint_regression)
 
+    add_executable(composite_rrt_seed_regression
+        tests/composite_rrt_seed_regression.cpp)
+    target_link_libraries(composite_rrt_seed_regression PRIVATE comotion)
+    add_test(NAME composite_rrt_seed_regression
+             COMMAND composite_rrt_seed_regression)
+
     add_executable(composite_rrtstar_regression
         tests/composite_rrtstar_regression.cpp)
     target_link_libraries(composite_rrtstar_regression PRIVATE comotion)

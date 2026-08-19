@@ -4,6 +4,7 @@
 #include "comotion/planning/PlanningSeed.h"
 #include "comotion/planning/PrioritizedSTRRT.h"
 #include "comotion/planning/detail/PlannerInvariantUtils.h"
+#include "comotion/planning/detail/SeededOmpl.h"
 #include <ompl/util/RandomNumbers.h>
 #include "comotion/collision/ValidationTypes.h"
 #include <ompl/base/spaces/RealVectorStateSpace.h>
@@ -113,25 +114,6 @@ arcSolutionMetricsFromArrivalTimesteps(
     }
     return {sum_of_cost_timesteps, makespan_timesteps};
 }
-
-class SeededRRTConnect : public ompl::geometric::RRTConnect {
-public:
-    SeededRRTConnect(const ompl::base::SpaceInformationPtr &si,
-                     std::uint_fast32_t seed)
-        : ompl::geometric::RRTConnect(si) {
-        rng_.setLocalSeed(seed);
-    }
-};
-
-class SeededRealVectorStateSampler
-    : public ompl::base::RealVectorStateSampler {
-public:
-    SeededRealVectorStateSampler(const ompl::base::StateSpace *space,
-                                 std::uint_fast32_t seed)
-        : ompl::base::RealVectorStateSampler(space) {
-        rng_.setLocalSeed(seed);
-    }
-};
 
 } // namespace
 
@@ -714,14 +696,14 @@ ARC::IndividualPlanResult ARC::planIndividualPath(
             *local_seed, 17);
         space->setStateSamplerAllocator(
             [sampler_seed](const ompl::base::StateSpace *sampler_space) {
-                return std::make_shared<SeededRealVectorStateSampler>(
+                return std::make_shared<detail::SeededRealVectorStateSampler>(
                     sampler_space, sampler_seed);
             });
     }
 
     ompl::geometric::SimpleSetup setup(si);
     if (local_seed.has_value()) {
-        setup.setPlanner(std::make_shared<SeededRRTConnect>(
+        setup.setPlanner(std::make_shared<detail::SeededRRTConnect>(
             si, omplLocalSeedFromUserPlanningSeed(*local_seed, 23)));
     } else {
         setup.setPlanner(
@@ -752,7 +734,15 @@ ARC::IndividualPlanResult ARC::planIndividualPath(
 
     if (simplify_initial_solutions_) {
         const auto simplify_start = std::chrono::steady_clock::now();
-        detail::simplifySolutionBounded(setup, simplification_options_);
+        if (local_seed.has_value()) {
+            auto simplifier = std::make_shared<detail::SeededPathSimplifier>(
+                si, omplLocalSeedFromUserPlanningSeed(*local_seed, 29),
+                setup.getGoal(), setup.getOptimizationObjective());
+            detail::simplifyPathBounded(setup.getSolutionPath(), simplifier,
+                                        simplification_options_);
+        } else {
+            detail::simplifySolutionBounded(setup, simplification_options_);
+        }
         result.simplify_ns = elapsedNanoseconds(simplify_start);
     }
     auto &gpath = setup.getSolutionPath();
@@ -849,6 +839,9 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
         RepairAttemptEvent attempt_event;
         attempt_event.repair_id = repair_id;
         attempt_event.attempt_index = repair_attempt_index++;
+        attempt_event.attempt_root_planning_seed =
+            arcRepairAttemptPlanningSeed(planning_seed_, repair_id,
+                                         attempt_event.attempt_index);
         attempt_event.seed_robot_i = conflict.seed_robot_i;
         attempt_event.seed_robot_j = conflict.seed_robot_j;
         attempt_event.conflict_timestep = conflict.conflict_timestep;
@@ -1100,7 +1093,11 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
 
                 auto planner = std::make_shared<PrioritizedSTRRT>();
                 planner->setProblem(sub_problem);
-                planner->setPlanningSeed(planning_seed_);
+                const auto prioritized_seed =
+                    arcRepairPrioritizedPlanningSeed(
+                        current_event.attempt_root_planning_seed);
+                current_event.prioritized_planning_seed = prioritized_seed;
+                planner->setPlanningSeed(prioritized_seed);
                 planner->setPersistAtGoal(false); // ARC: robots leave subproblem
                 planner->setEqualizePaths(false); // Return different-length paths
                 planner->setUseUnboundedTime(false);
@@ -1184,7 +1181,11 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
                     } else {
                         auto planner = std::make_shared<CompositeRRT>();
                         planner->setProblem(sub_problem);
-                        planner->setPlanningSeed(planning_seed_);
+                        const auto composite_seed =
+                            arcRepairCompositePlanningSeed(
+                                current_event.attempt_root_planning_seed);
+                        current_event.composite_planning_seed = composite_seed;
+                        planner->setPlanningSeed(composite_seed);
                         planner->setSimplifySolution(simplify_conflict_solutions_);
                         planner->setPathSimplificationOptions(
                             conflict_simplification_options);
@@ -1208,6 +1209,21 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
                                                   "simplify_wall_seconds", 0.0));
                             local_composite_simplification_times_seconds_wall_clock_ +=
                                 simplify_seconds;
+                            if (local_stats.contains("state_sampler_seed")) {
+                                current_event.composite_state_sampler_seed =
+                                    local_stats["state_sampler_seed"]
+                                        .get<std::uint_fast32_t>();
+                            }
+                            if (local_stats.contains("rrt_connect_seed")) {
+                                current_event.composite_rrt_connect_seed =
+                                    local_stats["rrt_connect_seed"]
+                                        .get<std::uint_fast32_t>();
+                            }
+                            if (local_stats.contains("path_simplifier_seed")) {
+                                current_event.composite_path_simplifier_seed =
+                                    local_stats["path_simplifier_seed"]
+                                        .get<std::uint_fast32_t>();
+                            }
                         }
                         if (status == ompl::base::PlannerStatus::EXACT_SOLUTION)
                             local_paths = planner->getSolutionPaths();
@@ -1700,6 +1716,28 @@ nlohmann::json ARC::repairAttemptEventsJson() const {
             {"composite_invoked", event.composite_invoked},
             {"solver_invoked", event.solver_invoked},
             {"resolved", event.resolved},
+            {"attempt_root_planning_seed",
+             event.attempt_root_planning_seed},
+            {"prioritized_planning_seed",
+             event.prioritized_planning_seed
+                 ? nlohmann::json(*event.prioritized_planning_seed)
+                 : nlohmann::json(nullptr)},
+            {"composite_planning_seed",
+             event.composite_planning_seed
+                 ? nlohmann::json(*event.composite_planning_seed)
+                 : nlohmann::json(nullptr)},
+            {"composite_state_sampler_seed",
+             event.composite_state_sampler_seed
+                 ? nlohmann::json(*event.composite_state_sampler_seed)
+                 : nlohmann::json(nullptr)},
+            {"composite_rrt_connect_seed",
+             event.composite_rrt_connect_seed
+                 ? nlohmann::json(*event.composite_rrt_connect_seed)
+                 : nlohmann::json(nullptr)},
+            {"composite_path_simplifier_seed",
+             event.composite_path_simplifier_seed
+                 ? nlohmann::json(*event.composite_path_simplifier_seed)
+                 : nlohmann::json(nullptr)},
             {"main_window_center_twice",
              event.main_window_center_twice
                  ? nlohmann::json(*event.main_window_center_twice)

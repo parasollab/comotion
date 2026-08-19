@@ -1,4 +1,6 @@
 #include "comotion/planning/CompositeRRT.h"
+#include "comotion/planning/PlanningSeed.h"
+#include "comotion/planning/detail/SeededOmpl.h"
 #include <ompl/base/PlannerTerminationCondition.h>
 #include <ompl/base/goals/GoalSampleableRegion.h>
 #include <ompl/geometric/PathGeometric.h>
@@ -29,8 +31,11 @@ inline std::uint64_t elapsedNanoseconds(Clock::time_point start) {
 
 class FixedIterationRRTConnect final : public og::RRTConnect {
 public:
-    explicit FixedIterationRRTConnect(const ob::SpaceInformationPtr &si)
-        : og::RRTConnect(si) {}
+    FixedIterationRRTConnect(const ob::SpaceInformationPtr &si,
+                             std::uint_fast32_t seed)
+        : og::RRTConnect(si) {
+        rng_.setLocalSeed(seed);
+    }
 
     void setExactIterations(unsigned iterations) { exact_iterations_ = iterations; }
     unsigned exactIterations() const { return exact_iterations_; }
@@ -226,16 +231,29 @@ ompl::base::PlannerStatus CompositeRRT::solve(double timeLimit) {
                   : problem_->createCompositeSpaceInfo(indices);
     auto space = si->getStateSpace();
 
+    const auto state_sampler_seed =
+        compositeRrtStateSamplerSeed(planning_seed_);
+    const auto rrt_connect_seed = compositeRrtPlannerSeed(planning_seed_);
+    const auto path_simplifier_seed =
+        compositeRrtPathSimplifierSeed(planning_seed_);
+    space->setStateSamplerAllocator(
+        [state_sampler_seed](const ob::StateSpace *sampler_space) {
+            return std::make_shared<detail::SeededRealVectorStateSampler>(
+                sampler_space, state_sampler_seed);
+        });
+
     og::SimpleSetup setup(si);
     std::shared_ptr<FixedIterationRRTConnect> fixed_iteration_planner;
     std::shared_ptr<og::RRTConnect> planner;
     if (continue_after_solution_until_iteration_cap_ &&
         max_rrt_connect_iterations_ > 0) {
-        fixed_iteration_planner = std::make_shared<FixedIterationRRTConnect>(si);
+        fixed_iteration_planner = std::make_shared<FixedIterationRRTConnect>(
+            si, rrt_connect_seed);
         fixed_iteration_planner->setExactIterations(max_rrt_connect_iterations_);
         planner = fixed_iteration_planner;
     } else {
-        planner = std::make_shared<og::RRTConnect>(si);
+        planner =
+            std::make_shared<detail::SeededRRTConnect>(si, rrt_connect_seed);
     }
     if (range_ && *range_ > 0.0)
         planner->setRange(*range_);
@@ -288,7 +306,11 @@ ompl::base::PlannerStatus CompositeRRT::solve(double timeLimit) {
     if (raw_status == ob::PlannerStatus::EXACT_SOLUTION) {
         if (simplify_solution_) {
             const auto simplify_start = Clock::now();
-            detail::simplifySolutionBounded(setup, simplification_options_);
+            auto simplifier = std::make_shared<detail::SeededPathSimplifier>(
+                si, path_simplifier_seed, setup.getGoal(),
+                setup.getOptimizationObjective());
+            detail::simplifyPathBounded(setup.getSolutionPath(), simplifier,
+                                        simplification_options_);
             simplify_wall_ns = elapsedNanoseconds(simplify_start);
         }
         auto &path = setup.getSolutionPath();
@@ -305,6 +327,10 @@ ompl::base::PlannerStatus CompositeRRT::solve(double timeLimit) {
     stats["simplify_wall_seconds"] =
         static_cast<double>(simplify_wall_ns) * 1e-9;
     stats["simplify_solution"] = simplify_solution_;
+    stats["planning_seed"] = planning_seed_;
+    stats["state_sampler_seed"] = state_sampler_seed;
+    stats["rrt_connect_seed"] = rrt_connect_seed;
+    stats["path_simplifier_seed"] = path_simplifier_seed;
     stats["path_simplification"] = {
         {"max_shortcut_steps", simplification_options_.max_shortcut_steps},
         {"max_empty_steps", simplification_options_.max_empty_steps},
