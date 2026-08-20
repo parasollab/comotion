@@ -1,4 +1,8 @@
 #include "comotion/collision/detail/CollisionBackend.h"
+#include "comotion/collision/detail/BalancedPairCoverAssignment.h"
+#include "comotion/collision/detail/CyclicCoverGreedyAssignment.h"
+#include "comotion/collision/detail/PairFirstGreedyAssignment.h"
+#include "comotion/collision/detail/PairCoveringDesign.h"
 #include "comotion/collision/detail/VampPackingUtils.h"
 #include "comotion/collision/detail/ValidationUtils.h"
 
@@ -344,6 +348,7 @@ void markCollidingLanes(const VecT &distances,
 struct ConfigPointerPack {
     std::array<std::vector<double>, kRake> sampled;
     std::array<const std::vector<double> *, kRake> pointers{};
+    std::array<bool, kRake> sampled_lanes{};
     std::size_t lanes = 0;
 
     ConfigPointerPack() = default;
@@ -351,7 +356,8 @@ struct ConfigPointerPack {
     ConfigPointerPack &operator=(const ConfigPointerPack &) = delete;
 
     ConfigPointerPack(ConfigPointerPack &&other) noexcept
-        : sampled(std::move(other.sampled)), lanes(other.lanes) {
+        : sampled(std::move(other.sampled)), pointers(other.pointers),
+          sampled_lanes(other.sampled_lanes), lanes(other.lanes) {
         bindPointers();
     }
 
@@ -359,15 +365,18 @@ struct ConfigPointerPack {
         if (this == &other)
             return *this;
         sampled = std::move(other.sampled);
+        pointers = other.pointers;
+        sampled_lanes = other.sampled_lanes;
         lanes = other.lanes;
         bindPointers();
         return *this;
     }
 
     void bindPointers() {
-        pointers.fill(nullptr);
-        for (std::size_t lane = 0; lane < lanes; ++lane)
-            pointers[lane] = &sampled[lane];
+        for (std::size_t lane = 0; lane < lanes; ++lane) {
+            if (sampled_lanes[lane])
+                pointers[lane] = &sampled[lane];
+        }
     }
 };
 
@@ -375,9 +384,34 @@ ConfigPointerPack configPointersForPack(const Path &path,
                                         const BatchPack &pack) {
     ConfigPointerPack configs;
     configs.lanes = pack.lanes;
-    for (std::size_t lane = 0; lane < pack.lanes; ++lane)
-        configAt(path, pack.timesteps[lane], configs.sampled[lane]);
-    configs.bindPointers();
+    for (std::size_t lane = 0; lane < pack.lanes; ++lane) {
+        const std::size_t timestep = pack.timesteps[lane];
+        const std::vector<double> *stored = nullptr;
+        if (!path.empty() && !path.has_explicit_timesteps()) {
+            stored = &path[std::min(timestep, path.size() - 1)];
+        } else if (!path.empty()) {
+            const auto &times = path.waypoint_timesteps_;
+            if (timestep <= times.front()) {
+                stored = &path.front();
+            } else if (timestep >= times.back()) {
+                stored = &path.back();
+            } else {
+                const auto exact =
+                    std::lower_bound(times.begin(), times.end(), timestep);
+                if (exact != times.end() && *exact == timestep) {
+                    stored = &path[static_cast<std::size_t>(exact -
+                                                           times.begin())];
+                }
+            }
+        }
+        if (stored) {
+            configs.pointers[lane] = stored;
+        } else {
+            configAt(path, timestep, configs.sampled[lane]);
+            configs.sampled_lanes[lane] = true;
+            configs.pointers[lane] = &configs.sampled[lane];
+        }
+    }
     return configs;
 }
 
@@ -1587,7 +1621,9 @@ public:
         const std::vector<ObstacleCylinder> &cylinders) const override {
         (void)obstacles;
         (void)cylinders;
-        last_work_stats_ = {};
+        const bool collect_work = validationInstrumentationEnabled();
+        if (collect_work)
+            last_work_stats_ = {};
         if (paths.size() != robots.size())
             return false;
 
@@ -1609,20 +1645,27 @@ public:
         }
         if (scan_begin >= end)
             return true;
-        last_work_stats_.motion_timesteps_possible = end - scan_begin;
-        if (options.check_environment) {
+        if (collect_work)
+            last_work_stats_.motion_timesteps_possible = end - scan_begin;
+        if (collect_work && options.check_environment) {
             for (const std::size_t begin : effective_starts) {
                 if (begin < end) {
                     last_work_stats_.robot_state_checks_possible += end - begin;
                 }
             }
         }
-        for (const std::size_t begin : effective_pair_starts) {
-            if (begin < end)
-                last_work_stats_.robot_pair_checks_possible += end - begin;
+        if (collect_work) {
+            for (const std::size_t begin : effective_pair_starts) {
+                if (begin < end)
+                    last_work_stats_.robot_pair_checks_possible += end - begin;
+            }
         }
-        std::vector<bool> timestep_checked(end - scan_begin, false);
+        std::vector<bool> timestep_checked;
+        if (collect_work)
+            timestep_checked.resize(end - scan_begin, false);
         const auto mark_pack = [&](const BatchPack &pack) {
+            if (!collect_work)
+                return;
             ++last_work_stats_.simd_packs_checked;
             last_work_stats_.simd_lanes_checked += pack.lanes;
             for (std::size_t lane = 0; lane < pack.lanes; ++lane) {
@@ -1649,8 +1692,9 @@ public:
                         if (robot_pack.lanes == 0)
                             continue;
                         mark_pack(robot_pack);
-                        last_work_stats_.robot_state_checks_completed +=
-                            robot_pack.lanes;
+                        if (collect_work)
+                            last_work_stats_.robot_state_checks_completed +=
+                                robot_pack.lanes;
                         const bool robot_valid =
                             options.exhaustive
                                 ? packedRobotPackValidExhaustive(
@@ -1676,8 +1720,9 @@ public:
                         if (pair_pack.lanes == 0)
                             continue;
                         mark_pack(pair_pack);
-                        last_work_stats_.robot_pair_checks_completed +=
-                            pair_pack.lanes;
+                        if (collect_work)
+                            last_work_stats_.robot_pair_checks_completed +=
+                                pair_pack.lanes;
                         if (!isPairPackValid(*robots[i], paths[i], *robots[j],
                                              paths[j], pair_pack)) {
                             if (!options.exhaustive)
@@ -1698,8 +1743,9 @@ public:
                     if (robot_pack.lanes == 0)
                         continue;
                     mark_pack(robot_pack);
-                    last_work_stats_.robot_state_checks_completed +=
-                        robot_pack.lanes;
+                    if (collect_work)
+                        last_work_stats_.robot_state_checks_completed +=
+                            robot_pack.lanes;
                     const bool robot_valid =
                         options.exhaustive
                             ? packedRobotPackValidExhaustive(
@@ -1723,8 +1769,9 @@ public:
                     if (pair_pack.lanes == 0)
                         continue;
                     mark_pack(pair_pack);
-                    last_work_stats_.robot_pair_checks_completed +=
-                        pair_pack.lanes;
+                    if (collect_work)
+                        last_work_stats_.robot_pair_checks_completed +=
+                            pair_pack.lanes;
                     if (!isPairPackValid(*robots[i], paths[i], *robots[j],
                                          paths[j], pair_pack)) {
                         if (!options.exhaustive)
@@ -1875,6 +1922,17 @@ public:
 
         for (const auto &pack : packs) {
             std::vector<Candidate> candidates;
+            std::vector<PackedRobotSpheres> packed_cache(paths.size());
+            std::vector<char> packed_cached(paths.size(), 0);
+            const auto packedFor = [&](std::size_t robot)
+                -> const PackedRobotSpheres & {
+                if (!packed_cached[robot]) {
+                    packed_cache[robot] = buildPackedRobotSpheresForPack(
+                        *robots[robot], paths[robot], pack);
+                    packed_cached[robot] = 1;
+                }
+                return packed_cache[robot];
+            };
 
             for (std::size_t i = 0; i < paths.size(); ++i) {
                 if (optimistic_unique && robot_used[i] != 0)
@@ -1891,25 +1949,22 @@ public:
                         continue;
                     bool pair_had_candidate = false;
                     while (pair_begin <= pack_last) {
-                        const BatchPack pair_pack =
-                            filterPackAtOrAfter(pack, pair_begin);
-                        if (pair_pack.lanes == 0)
-                            break;
-                        auto conflict = findFirstPairPackConflict(
-                            *robots[i], paths[i], *robots[j], paths[j],
-                            pair_pack);
-                        if (!conflict)
+                        const auto timestep =
+                            earliestPackedSphereConflictTimestep(
+                                packedFor(i), packedFor(j), pack, pair_begin);
+                        if (!timestep)
                             break;
                         pair_had_candidate = true;
                         candidates.push_back(Candidate{CompositeConflict{
                             ConflictScope::InterRobot, static_cast<int>(i),
-                            static_cast<int>(j), conflict->timestep,
-                            conflict->alpha, conflict->kind,
-                            conflict->config_a, conflict->config_b},
+                            static_cast<int>(j), *timestep, 0.0,
+                            ConflictKind::Vertex,
+                            configAt(paths[i], *timestep),
+                            configAt(paths[j], *timestep)},
                             pair_index});
                         if (optimistic_unique || max_conflicts == 1)
                             break;
-                        pair_begin = conflict->timestep + 1;
+                        pair_begin = *timestep + 1;
                     }
                     if (optimistic_unique && !pair_had_candidate &&
                         next_t_begin_by_pair_out &&
@@ -2189,6 +2244,19 @@ private:
             std::max<std::size_t>(1, options.conflict_find_parallel_workers);
         const std::size_t horizon =
             std::max<std::size_t>(1, options.conflict_find_parallel_horizon);
+        const bool use_pair_cover_assignment =
+            worker_count <= 16 && usePairCoverConflictAssignment(
+                                      options.conflict_find_parallel_assignment,
+                                      worker_count);
+        const bool use_balanced_pair_cover_assignment =
+            options.conflict_find_parallel_assignment ==
+            ConflictFindParallelAssignment::BalancedPairCover;
+        const bool use_pair_first_greedy_assignment =
+            options.conflict_find_parallel_assignment ==
+            ConflictFindParallelAssignment::PairFirstGreedy;
+        const bool use_cyclic_cover_greedy_assignment =
+            options.conflict_find_parallel_assignment ==
+            ConflictFindParallelAssignment::CyclicCoverGreedy;
         const bool optimistic_unique =
             options.inter_robot_conflict_batch_mode ==
             InterRobotConflictBatchMode::OptimisticIndependent;
@@ -2200,21 +2268,142 @@ private:
             worker_count,
             std::vector<std::size_t>(paths.size(), kInvalidRobotSlot));
 
-        for (std::size_t worker = 0; worker < worker_count; ++worker) {
-            worker_robots[worker].reserve(paths.size());
-            for (std::size_t robot = 0; robot < paths.size(); ++robot) {
-                worker_robot_slots[worker][robot] =
-                    worker_robots[worker].size();
-                worker_robots[worker].push_back(robot);
+        if (use_balanced_pair_cover_assignment) {
+            const auto assignment = cachedBalancedPairCoverAssignment(
+                paths.size(), worker_count);
+            for (std::size_t worker = 0; worker < worker_count; ++worker) {
+                worker_robots[worker] = assignment->worker_robots[worker];
+                for (std::size_t slot = 0;
+                     slot < worker_robots[worker].size(); ++slot) {
+                    worker_robot_slots[worker][worker_robots[worker][slot]] =
+                        slot;
+                }
             }
-        }
-        // Distribute the pair frontier uniformly in round-robin order.
-        for (std::size_t i = 0; i < paths.size(); ++i) {
-            for (std::size_t j = i + 1; j < paths.size(); ++j) {
-                const std::size_t pair_index =
-                    pairFrontierIndex(i, j, paths.size());
-                worker_pairs[pair_index % worker_count].push_back(
-                    WorkPair{i, j, pair_index});
+            for (std::size_t i = 0; i < paths.size(); ++i) {
+                for (std::size_t j = i + 1; j < paths.size(); ++j) {
+                    const std::size_t pair_index =
+                        pairFrontierIndex(i, j, paths.size());
+                    const std::size_t worker =
+                        assignment->worker_by_pair[pair_index];
+                    if (worker >= worker_count) {
+                        throw std::runtime_error(
+                            "balanced pair-cover worker index out of range");
+                    }
+                    worker_pairs[worker].push_back(
+                        WorkPair{i, j, pair_index});
+                }
+            }
+        } else if (use_pair_first_greedy_assignment) {
+            const auto assignment = cachedPairFirstGreedyAssignment(
+                paths.size(), worker_count);
+            for (std::size_t worker = 0; worker < worker_count; ++worker) {
+                worker_robots[worker] = assignment->worker_robots[worker];
+                for (std::size_t slot = 0;
+                     slot < worker_robots[worker].size(); ++slot) {
+                    worker_robot_slots[worker][worker_robots[worker][slot]] =
+                        slot;
+                }
+            }
+            for (std::size_t i = 0; i < paths.size(); ++i) {
+                for (std::size_t j = i + 1; j < paths.size(); ++j) {
+                    const std::size_t pair_index =
+                        pairFrontierIndex(i, j, paths.size());
+                    const std::size_t worker =
+                        assignment->worker_by_pair[pair_index];
+                    if (worker >= worker_count) {
+                        throw std::runtime_error(
+                            "pair-first greedy worker index out of range");
+                    }
+                    worker_pairs[worker].push_back(
+                        WorkPair{i, j, pair_index});
+                }
+            }
+        } else if (use_cyclic_cover_greedy_assignment) {
+            const auto assignment = cachedCyclicCoverGreedyAssignment(
+                paths.size(), worker_count);
+            for (std::size_t worker = 0; worker < worker_count; ++worker) {
+                worker_robots[worker] = assignment->worker_robots[worker];
+                for (std::size_t slot = 0;
+                     slot < worker_robots[worker].size(); ++slot) {
+                    worker_robot_slots[worker][worker_robots[worker][slot]] =
+                        slot;
+                }
+            }
+            for (std::size_t i = 0; i < paths.size(); ++i) {
+                for (std::size_t j = i + 1; j < paths.size(); ++j) {
+                    const std::size_t pair_index =
+                        pairFrontierIndex(i, j, paths.size());
+                    const std::size_t worker =
+                        assignment->worker_by_pair[pair_index];
+                    if (worker >= worker_count) {
+                        throw std::runtime_error(
+                            "cyclic-cover greedy worker index out of range");
+                    }
+                    worker_pairs[worker].push_back(
+                        WorkPair{i, j, pair_index});
+                }
+            }
+        } else if (use_pair_cover_assignment) {
+            const auto buckets = pairCoveringDesign(
+                static_cast<int>(paths.size()),
+                static_cast<int>(worker_count));
+            std::vector<std::uint64_t> robot_bucket_masks(paths.size(), 0);
+            for (std::size_t worker = 0; worker < worker_count; ++worker) {
+                worker_robots[worker].reserve(buckets[worker].size());
+                for (const int robot : buckets[worker]) {
+                    const auto robot_index = static_cast<std::size_t>(robot);
+                    worker_robot_slots[worker][robot_index] =
+                        worker_robots[worker].size();
+                    worker_robots[worker].push_back(robot_index);
+                    robot_bucket_masks[robot_index] |=
+                        std::uint64_t{1} << worker;
+                }
+            }
+
+            for (std::size_t i = 0; i < paths.size(); ++i) {
+                for (std::size_t j = i + 1; j < paths.size(); ++j) {
+                    const std::uint64_t covering_workers =
+                        robot_bucket_masks[i] & robot_bucket_masks[j];
+                    if (covering_workers == 0) {
+                        throw std::runtime_error(
+                            "VAMP pair-cover conflict finder assignment did "
+                            "not cover every robot pair");
+                    }
+                    std::size_t best_worker = worker_count;
+                    std::size_t best_load =
+                        std::numeric_limits<std::size_t>::max();
+                    for (std::size_t worker = 0; worker < worker_count;
+                         ++worker) {
+                        if ((covering_workers &
+                             (std::uint64_t{1} << worker)) == 0)
+                            continue;
+                        if (worker_pairs[worker].size() < best_load) {
+                            best_worker = worker;
+                            best_load = worker_pairs[worker].size();
+                        }
+                    }
+                    const std::size_t pair_index =
+                        pairFrontierIndex(i, j, paths.size());
+                    worker_pairs[best_worker].push_back(
+                        WorkPair{i, j, pair_index});
+                }
+            }
+        } else {
+            for (std::size_t worker = 0; worker < worker_count; ++worker) {
+                worker_robots[worker].reserve(paths.size());
+                for (std::size_t robot = 0; robot < paths.size(); ++robot) {
+                    worker_robot_slots[worker][robot] =
+                        worker_robots[worker].size();
+                    worker_robots[worker].push_back(robot);
+                }
+            }
+            for (std::size_t i = 0; i < paths.size(); ++i) {
+                for (std::size_t j = i + 1; j < paths.size(); ++j) {
+                    const std::size_t pair_index =
+                        pairFrontierIndex(i, j, paths.size());
+                    worker_pairs[pair_index % worker_count].push_back(
+                        WorkPair{i, j, pair_index});
+                }
             }
         }
 
@@ -2259,6 +2448,8 @@ private:
                 double build_worker_cpu_seconds = 0.0;
                 double collision_worker_wall_seconds = 0.0;
                 double collision_worker_cpu_seconds = 0.0;
+                const bool collect_worker_timing =
+                    options.conflict_find_timing_instrumentation != nullptr;
                 const std::size_t segment_begin =
                     static_cast<std::size_t>(command.segment_begin);
                 const std::size_t segment_end =
@@ -2291,14 +2482,20 @@ private:
                 std::vector<char> pair_has_candidate(
                     effective_pair_starts.size(), 0);
                 const auto &local_robots = worker_robots[worker_index];
-                const auto pack_build_wall_start = Clock::now();
-                const double pack_build_cpu_start = processCpuSeconds();
+                Clock::time_point pack_build_wall_start{};
+                double pack_build_cpu_start = 0.0;
+                if (collect_worker_timing) {
+                    pack_build_wall_start = Clock::now();
+                    pack_build_cpu_start = processCpuSeconds();
+                }
                 const auto packs = makeBatchPacks(
                     segment_begin, segment_end, VampBatchPacking::Linear);
-                build_worker_wall_seconds +=
-                    elapsedWallSeconds(pack_build_wall_start);
-                build_worker_cpu_seconds +=
-                    elapsedProcessCpuSeconds(pack_build_cpu_start);
+                if (collect_worker_timing) {
+                    build_worker_wall_seconds +=
+                        elapsedWallSeconds(pack_build_wall_start);
+                    build_worker_cpu_seconds +=
+                        elapsedProcessCpuSeconds(pack_build_cpu_start);
+                }
                 for (const auto &pack : packs) {
                     std::vector<PackedRobotSpheres> packed_cache(
                         local_robots.size());
@@ -2313,15 +2510,21 @@ private:
                                 "intermediate slot");
                         }
                         if (!packed_cached[local_slot]) {
-                            const auto build_wall_start = Clock::now();
-                            const double build_cpu_start = processCpuSeconds();
+                            Clock::time_point build_wall_start{};
+                            double build_cpu_start = 0.0;
+                            if (collect_worker_timing) {
+                                build_wall_start = Clock::now();
+                                build_cpu_start = processCpuSeconds();
+                            }
                             packed_cache[local_slot] =
                                 buildPackedRobotSpheresForPack(
                                     *robots[robot], paths[robot], pack);
-                            build_worker_wall_seconds +=
-                                elapsedWallSeconds(build_wall_start);
-                            build_worker_cpu_seconds +=
-                                elapsedProcessCpuSeconds(build_cpu_start);
+                            if (collect_worker_timing) {
+                                build_worker_wall_seconds +=
+                                    elapsedWallSeconds(build_wall_start);
+                                build_worker_cpu_seconds +=
+                                    elapsedProcessCpuSeconds(build_cpu_start);
+                            }
                             packed_cached[local_slot] = 1;
                         }
                         return packed_cache[local_slot];
@@ -2340,16 +2543,22 @@ private:
                         const auto &spheres_j = packedFor(pair.robot_j);
                         std::size_t scan_begin = eligible.scan_begin;
                         while (scan_begin <= pack_last) {
-                            const auto collision_wall_start = Clock::now();
-                            const double collision_cpu_start =
-                                processCpuSeconds();
+                            Clock::time_point collision_wall_start{};
+                            double collision_cpu_start = 0.0;
+                            if (collect_worker_timing) {
+                                collision_wall_start = Clock::now();
+                                collision_cpu_start = processCpuSeconds();
+                            }
                             const auto timestep =
                                 earliestPackedSphereConflictTimestep(
                                     spheres_i, spheres_j, pack, scan_begin);
-                            collision_worker_wall_seconds +=
-                                elapsedWallSeconds(collision_wall_start);
-                            collision_worker_cpu_seconds +=
-                                elapsedProcessCpuSeconds(collision_cpu_start);
+                            if (collect_worker_timing) {
+                                collision_worker_wall_seconds +=
+                                    elapsedWallSeconds(collision_wall_start);
+                                collision_worker_cpu_seconds +=
+                                    elapsedProcessCpuSeconds(
+                                        collision_cpu_start);
+                            }
                             if (!timestep)
                                 break;
                             raw_candidates.push_back(RawConflictCandidate{

@@ -10,6 +10,12 @@
 
 namespace comotion {
 
+// Detailed validation timing and work accounting is intended for dedicated
+// profiling runs. It is disabled by default because these counters sit on
+// collision-checking hot paths. Set COMOTION_VALIDATION_INSTRUMENTATION=1 in
+// the process environment to opt in.
+bool validationInstrumentationEnabled();
+
 enum class ConflictKind { Vertex };
 enum class ConflictScope { Environment, Self, InterRobot };
 enum class VampBatchOrdering { Combined, Hierarchical };
@@ -22,6 +28,9 @@ enum class ConflictFindParallelAssignment {
     Auto,
     PairCover,
     AllRobotsRoundRobin,
+    BalancedPairCover,
+    PairFirstGreedy,
+    CyclicCoverGreedy,
 };
 
 struct VampValidationStrategy {
@@ -249,6 +258,12 @@ inline bool usePairCoverConflictAssignment(
     case ConflictFindParallelAssignment::PairCover:
         return true;
     case ConflictFindParallelAssignment::AllRobotsRoundRobin:
+        return false;
+    case ConflictFindParallelAssignment::BalancedPairCover:
+        return false;
+    case ConflictFindParallelAssignment::PairFirstGreedy:
+        return false;
+    case ConflictFindParallelAssignment::CyclicCoverGreedy:
         return false;
     }
     return false;

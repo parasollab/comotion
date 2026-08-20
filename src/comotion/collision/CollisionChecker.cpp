@@ -2,10 +2,28 @@
 #include "comotion/collision/detail/CollisionBackend.h"
 
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <utility>
 
 namespace comotion {
+
+bool validationInstrumentationEnabled() {
+    static const bool enabled = [] {
+        const char *value = std::getenv("COMOTION_VALIDATION_INSTRUMENTATION");
+        if (!value)
+            return false;
+        return std::strcmp(value, "1") == 0 ||
+               std::strcmp(value, "true") == 0 ||
+               std::strcmp(value, "TRUE") == 0 ||
+               std::strcmp(value, "yes") == 0 ||
+               std::strcmp(value, "YES") == 0 ||
+               std::strcmp(value, "on") == 0 ||
+               std::strcmp(value, "ON") == 0;
+    }();
+    return enabled;
+}
 
 namespace {
 
@@ -85,9 +103,15 @@ class ScopedValidationTiming {
 public:
     ScopedValidationTiming(ValidationTimingOp op,
                            const detail::CollisionBackend &backend)
-        : op_(op), backend_(&backend), start_(TraceClock::now()) {}
+        : op_(op), backend_(&backend),
+          enabled_(validationInstrumentationEnabled()) {
+        if (enabled_)
+            start_ = TraceClock::now();
+    }
 
     ~ScopedValidationTiming() {
+        if (!enabled_)
+            return;
         ValidationWorkStats work;
         if (backend_)
             work = backend_->lastValidationWorkStats();
@@ -99,6 +123,7 @@ public:
 private:
     ValidationTimingOp op_;
     const detail::CollisionBackend *backend_ = nullptr;
+    bool enabled_ = false;
     TraceClock::time_point start_;
 };
 

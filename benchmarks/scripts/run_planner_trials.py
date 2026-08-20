@@ -20,6 +20,7 @@ from typing import Any, Iterable, Sequence
 sys.dont_write_bytecode = True
 
 from benchmark_runner_common import (
+    DEFAULT_PARALLEL_ARC_CONFLICT_FIND_ASSIGNMENT,
     DEFAULT_BUILD_DIR,
     DEFAULT_RESULTS_DIR,
     PLANNER_LABELS,
@@ -366,6 +367,9 @@ PARAMETER_FLAGS: dict[str, FlagSpec] = {
     "parallel_arc_strategy": FlagSpec("--parallel-arc-strategy"),
     "parallel_arc_conflict_strategy": FlagSpec("--parallel-arc-conflict-strategy"),
     "parallel_arc_conflict_find_mode": FlagSpec("--parallel-arc-conflict-find-mode"),
+    "parallel_arc_conflict_find_assignment": FlagSpec(
+        "--parallel-arc-conflict-find-assignment"
+    ),
     "parallel_arc_conflict_find_horizon": FlagSpec(
         "--parallel-arc-conflict-find-horizon"
     ),
@@ -634,6 +638,12 @@ def resolve_planner_params(
         ),
         f"scenario {scenario.parameter_profile} n{num_robots} planner {method}",
     )
+
+    if method == "parallel_arc":
+        params.setdefault(
+            "parallel_arc_conflict_find_assignment",
+            DEFAULT_PARALLEL_ARC_CONFLICT_FIND_ASSIGNMENT,
+        )
 
     unknown = sorted(set(params) - set(PARAMETER_FLAGS))
     if unknown:

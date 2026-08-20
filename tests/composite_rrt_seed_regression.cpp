@@ -241,24 +241,69 @@ bool testRepairAttemptSeedHierarchy() {
     constexpr std::uint32_t kParentSeed = 19;
     std::set<std::uint32_t> attempt_roots;
     std::set<std::uint_fast32_t> sampler_seeds;
-    for (std::uint64_t attempt = 0; attempt < 16; ++attempt) {
-        const auto root = comotion::arcRepairAttemptPlanningSeed(
-            kParentSeed, 7, attempt);
-        const auto composite =
-            comotion::arcRepairCompositePlanningSeed(root);
-        attempt_roots.insert(root);
-        sampler_seeds.insert(
-            comotion::compositeRrtStateSamplerSeed(composite));
-        if (!expectTrue("solver domains are separated",
-                        comotion::arcRepairPrioritizedPlanningSeed(root) !=
-                            composite)) {
-            return false;
+    for (std::uint64_t repair = 0; repair < 8; ++repair) {
+        for (std::uint64_t attempt = 0; attempt < 16; ++attempt) {
+            const auto root = comotion::arcRepairAttemptPlanningSeed(
+                kParentSeed, repair, attempt);
+            const auto composite =
+                comotion::arcRepairCompositePlanningSeed(root);
+            attempt_roots.insert(root);
+            sampler_seeds.insert(
+                comotion::compositeRrtStateSamplerSeed(composite));
+            if (!expectTrue("solver domains are separated",
+                            comotion::arcRepairPrioritizedPlanningSeed(root) !=
+                                composite)) {
+                return false;
+            }
         }
     }
-    return expectTrue("16 attempts have unique root seeds",
-                      attempt_roots.size() == 16) &&
-           expectTrue("16 attempts have unique effective sampler seeds",
-                      sampler_seeds.size() == 16);
+    return expectTrue("128 attempts have unique root seeds",
+                      attempt_roots.size() == 128) &&
+           expectTrue("128 attempts have unique effective sampler seeds",
+                      sampler_seeds.size() == 128);
+}
+
+bool testParallelArcRepairSeedHierarchy() {
+    constexpr std::uint32_t kParentSeed = 23;
+    std::set<std::uint32_t> seeds;
+    for (std::uint64_t batch = 0; batch < 8; ++batch) {
+        for (std::uint64_t task = 0; task < 32; ++task) {
+            for (std::uint64_t attempt = 0; attempt < 8; ++attempt) {
+                const auto seed =
+                    comotion::parallelArcRepairAttemptPlanningSeed(
+                        kParentSeed, batch, task, attempt);
+                seeds.insert(seed);
+                if (!expectTrue(
+                        "P-ARC repair seed is deterministic",
+                        seed == comotion::parallelArcRepairAttemptPlanningSeed(
+                                    kParentSeed, batch, task, attempt))) {
+                    return false;
+                }
+            }
+        }
+    }
+    if (!expectTrue("2048 P-ARC attempts have unique seeds",
+                    seeds.size() == 2048)) {
+        return false;
+    }
+
+    // The former additive salt mapped these two distinct tuples to the same
+    // integer before hashing: task + 1 was identical to attempt + 64.
+    if (!expectTrue(
+            "historically colliding P-ARC tuples are separated",
+            comotion::parallelArcRepairAttemptPlanningSeed(kParentSeed, 0, 1,
+                                                           0) !=
+                comotion::parallelArcRepairAttemptPlanningSeed(kParentSeed, 0,
+                                                               0, 64))) {
+        return false;
+    }
+
+    return expectTrue(
+        "full-width P-ARC identifiers do not truncate",
+        comotion::parallelArcRepairAttemptPlanningSeed(
+            kParentSeed, (std::uint64_t{1} << 40), 3, 5) !=
+            comotion::parallelArcRepairAttemptPlanningSeed(kParentSeed, 0, 3,
+                                                           5));
 }
 
 } // namespace
@@ -267,6 +312,8 @@ int main() {
     if (!testForkedSeedDiversity())
         return 1;
     if (!testRepairAttemptSeedHierarchy())
+        return 1;
+    if (!testParallelArcRepairSeedHierarchy())
         return 1;
     std::cout << "composite_rrt_seed_regression: OK\n";
     return 0;

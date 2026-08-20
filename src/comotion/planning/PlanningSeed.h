@@ -71,6 +71,10 @@ inline constexpr std::uint64_t kPlanningSeedDomainCompositeRrtPlanner =
     0x435252545f504c4eULL; // "CRRT_PLN"
 inline constexpr std::uint64_t kPlanningSeedDomainCompositeRrtSimplifier =
     0x435252545f53494dULL; // "CRRT_SIM"
+inline constexpr std::uint64_t kPlanningSeedDomainParallelArcRepair =
+    0x504152435f525052ULL; // "PARC_RPR"
+inline constexpr std::uint64_t kPlanningSeedDomainParallelArcAttempt =
+    0x504152435f415454ULL; // "PARC_ATT"
 
 inline std::uint32_t arcRepairAttemptPlanningSeed(
     std::uint32_t parent_seed, std::uint64_t repair_id,
@@ -89,6 +93,21 @@ inline std::uint32_t arcRepairCompositePlanningSeed(
     std::uint32_t attempt_root_seed) {
     return derivePlanningSeed(attempt_root_seed,
                               kPlanningSeedDomainArcCompositeSolver);
+}
+
+/// Seed for one logical P-ARC repair attempt. The batch/task hierarchy avoids
+/// structural collisions from integer salt packing. The worker slot is
+/// intentionally absent: scheduling the same logical attempt on a different
+/// process must not change the result.
+inline std::uint32_t parallelArcRepairAttemptPlanningSeed(
+    std::uint32_t parent_seed, std::uint64_t batch_index,
+    std::uint64_t task_index, std::uint64_t attempt_index) {
+    const auto repair_seed = derivePlanningSeed(
+        parent_seed, kPlanningSeedDomainParallelArcRepair, batch_index,
+        task_index);
+    return derivePlanningSeed(repair_seed,
+                              kPlanningSeedDomainParallelArcAttempt,
+                              attempt_index);
 }
 
 inline std::uint_fast32_t compositeRrtStateSamplerSeed(

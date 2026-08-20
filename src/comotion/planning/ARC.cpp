@@ -2174,8 +2174,10 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
         const auto conflict_detection_tree_cpu_start =
             processTreeCpuUsageSnapshot();
         ConflictFindTimingInstrumentation conflict_find_timing;
-        options.conflict_find_timing_instrumentation =
-            &conflict_find_timing;
+        if (validationInstrumentationEnabled()) {
+            options.conflict_find_timing_instrumentation =
+                &conflict_find_timing;
+        }
         const auto conflicts = conflict_checker.findConflicts(
             solution_paths_, ptrs, options, 0, 1, true,
             [this](const Conflict &conflict) {

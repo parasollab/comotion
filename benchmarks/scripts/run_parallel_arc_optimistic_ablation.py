@@ -374,6 +374,28 @@ def main() -> int:
         print(f"summary_csv: {summary_csv_path}")
         return 0
 
+    output_root.mkdir(parents=True, exist_ok=True)
+    (output_root / "experiment_config.json").write_text(
+        json.dumps(
+            {
+                "schema": "comotion.parallel_arc_optimistic_ablation.v1",
+                "seeds": seeds,
+                "task_indices": task_indices,
+                "time_limit_seconds": args.time_limit,
+                "timeout_grace_seconds": args.timeout_grace,
+                "collision_backend": args.collision_backend,
+                "resolution": args.resolution,
+                "top_level_trial_jobs": args.jobs,
+                "validation_instrumentation": False,
+                "arc_repair_seed_schedule": (
+                    "reuse_unique_outer_trial_or_worker_seed"
+                ),
+                "trial_process_group_cleanup_required": True,
+                "arc_profile_args": list(PANDA_ARC_PROFILE_ARGS),
+            },
+            indent=2,
+        ) + "\n"
+    )
     write_manifest(
         output_root,
         experiment_type="parallel_arc_optimistic_conflict_ablation_panda_cage_n8",

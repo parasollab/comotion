@@ -22,6 +22,7 @@ SCRIPT_DIR = REPO_ROOT / "benchmarks" / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import run_planner_trials as runner  # noqa: E402
+import benchmark_runner_common as common  # noqa: E402
 
 
 class PlannerTrialRunnerTest(unittest.TestCase):
@@ -223,6 +224,58 @@ class PlannerTrialRunnerTest(unittest.TestCase):
                     "--vamp-validation-strategy",
                     runner.planner_params_to_args(params),
                 )
+
+    def test_parallel_arc_uses_balanced_pair_cover_by_default(self) -> None:
+        param_doc = runner.read_json_file(
+            REPO_ROOT / "benchmarks" / "configs" / "planner_trial_params.json"
+        )
+        params = runner.resolve_planner_params(
+            param_doc,
+            scenario=runner.SCENARIOS["panda_cage"],
+            num_robots=8,
+            method="parallel_arc",
+        )
+        self.assertEqual(
+            params["parallel_arc_conflict_find_assignment"],
+            "balanced_pair_cover",
+        )
+        args = runner.planner_params_to_args(params)
+        assignment_index = args.index(
+            "--parallel-arc-conflict-find-assignment"
+        )
+        self.assertEqual(args[assignment_index + 1], "balanced_pair_cover")
+
+        common_args = common.effective_variant_extra_args(
+            common.PlannerVariant(
+                label="P-ARC-8",
+                algorithm="parallel_arc",
+                slug="p_arc_8",
+            )
+        )
+        self.assertEqual(
+            common_args,
+            (
+                "--parallel-arc-conflict-find-assignment",
+                "balanced_pair_cover",
+            ),
+        )
+
+    def test_parallel_arc_assignment_override_is_preserved(self) -> None:
+        variant = common.PlannerVariant(
+            label="P-ARC-8 round robin",
+            algorithm="parallel_arc",
+            slug="p_arc_8_round_robin",
+            extra_args=(
+                "--parallel-arc-conflict-find-assignment",
+                "round_robin",
+            ),
+        )
+        effective = common.effective_variant_extra_args(variant)
+        self.assertEqual(
+            effective.count("--parallel-arc-conflict-find-assignment"),
+            1,
+        )
+        self.assertEqual(effective[-1], "round_robin")
 
     def test_parallel_trial_batch_assigns_cores_round_robin(self) -> None:
         specs = runner.build_trial_specs(

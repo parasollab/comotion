@@ -132,6 +132,8 @@ struct AppOptions {
     std::string parallel_arc_strategy = "synchronous";
     std::string parallel_arc_conflict_strategy = "greedy";
     std::string parallel_arc_conflict_find_mode = "segment_parallel";
+    std::string parallel_arc_conflict_find_assignment =
+        "balanced_pair_cover";
     std::string parallel_arc_conflict_batch_mode = "optimistic";
     std::size_t parallel_arc_conflict_find_horizon = 200;
     bool parallel_arc_conflict_ablation_only = false;
@@ -1048,6 +1050,7 @@ void printUsage(const char *prog) {
         << "  --parallel-arc-strategy <synchronous|asynchronous>\n"
         << "  --parallel-arc-conflict-strategy <greedy|spatial_distribution>\n"
         << "  --parallel-arc-conflict-find-mode <sequential|segment_parallel>\n"
+        << "  --parallel-arc-conflict-find-assignment <auto|pair_cover|round_robin|balanced_pair_cover|pair_first_greedy|cyclic_cover_greedy> (default: balanced_pair_cover)\n"
         << "  --parallel-arc-conflict-batch-mode <optimistic|independent_only>\n"
         << "  --parallel-arc-conflict-find-horizon <n>\n"
         << "  --parallel-arc-conflict-ablation-only\n"
@@ -1294,6 +1297,9 @@ AppOptions parseArgs(int argc, char **argv) {
         } else if (arg == "--parallel-arc-conflict-find-mode") {
             options.parallel_arc_conflict_find_mode =
                 requireValue(i, argc, argv, arg);
+        } else if (arg == "--parallel-arc-conflict-find-assignment") {
+            options.parallel_arc_conflict_find_assignment =
+                requireValue(i, argc, argv, arg);
         } else if (arg == "--parallel-arc-conflict-batch-mode") {
             options.parallel_arc_conflict_batch_mode =
                 requireValue(i, argc, argv, arg);
@@ -1421,6 +1427,20 @@ AppOptions parseArgs(int argc, char **argv) {
         throw std::runtime_error(
             "--parallel-arc-conflict-find-horizon must be at least 1 for "
             "segment_parallel mode");
+    }
+    const auto conflict_find_assignment =
+        common::parseParallelArcConflictFindAssignment(
+            options.parallel_arc_conflict_find_assignment);
+    if ((conflict_find_assignment ==
+             comotion::ConflictFindParallelAssignment::PairFirstGreedy ||
+         conflict_find_assignment ==
+             comotion::ConflictFindParallelAssignment::CyclicCoverGreedy) &&
+        options.collision_backend !=
+            comotion::CollisionChecker::Backend::Vamp) {
+        throw std::runtime_error(
+            options.parallel_arc_conflict_find_assignment +
+            " conflict assignment currently requires the VAMP collision "
+            "backend");
     }
     if (options.parallel_arc_conflict_ablation_only) {
         if (options.algorithm != "parallel_arc") {

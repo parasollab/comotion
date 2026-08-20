@@ -20,6 +20,7 @@ from typing import Any, Iterable, Sequence
 sys.dont_write_bytecode = True
 
 from benchmark_runner_common import (
+    DEFAULT_PARALLEL_ARC_CONFLICT_FIND_ASSIGNMENT,
     DEFAULT_BUILD_DIR,
     DEFAULT_RESULTS_DIR,
     PLANNER_LABELS,
@@ -390,6 +391,11 @@ def build_specs(args: argparse.Namespace, config: dict[str, Any]) -> list[TrialS
                     app.method_defaults.get(method, {}),
                     param_set.params,
                 )
+                if method == "parallel_arc":
+                    params.setdefault(
+                        "parallel_arc_conflict_find_assignment",
+                        DEFAULT_PARALLEL_ARC_CONFLICT_FIND_ASSIGNMENT,
+                    )
                 merged_param_set = ParamSet(
                     name=param_set.name,
                     params=params,

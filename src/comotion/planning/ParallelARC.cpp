@@ -1,6 +1,9 @@
 #include "comotion/planning/ParallelARC.h"
 
 #include "comotion/collision/ConflictChecker.h"
+#include "comotion/collision/detail/BalancedPairCoverAssignment.h"
+#include "comotion/collision/detail/CyclicCoverGreedyAssignment.h"
+#include "comotion/collision/detail/PairFirstGreedyAssignment.h"
 #include "comotion/planning/PlanningRng.h"
 
 #include <boost/archive/binary_iarchive.hpp>
@@ -148,12 +151,11 @@ std::vector<int> vectorDifference(const std::vector<int> &lhs,
 }
 
 std::uint32_t workerPlanningSeed(std::uint32_t planner_seed, int batch_index,
-                                 int task_index, int slot_index,
-                                 int attempt_index) {
-    const int salt = 1000000 + batch_index * 100000 + task_index * 4096 +
-                     attempt_index * 64 + slot_index;
-    return static_cast<std::uint32_t>(
-        comotion::omplLocalSeedFromUserPlanningSeed(planner_seed, salt));
+                                 int task_index, int attempt_index) {
+    return comotion::parallelArcRepairAttemptPlanningSeed(
+        planner_seed, static_cast<std::uint64_t>(batch_index),
+        static_cast<std::uint64_t>(task_index),
+        static_cast<std::uint64_t>(attempt_index));
 }
 
 std::uint32_t initialIndividualPlanningSeed(std::uint32_t planner_seed,
@@ -171,6 +173,25 @@ const char *parallelArcConflictFindModeStr(
         return "sequential";
     case comotion::ParallelArcConflictFindMode::SegmentParallel:
         return "segment_parallel";
+    }
+    return "unknown";
+}
+
+const char *parallelArcConflictFindAssignmentStr(
+    comotion::ConflictFindParallelAssignment assignment) {
+    switch (assignment) {
+    case comotion::ConflictFindParallelAssignment::Auto:
+        return "auto";
+    case comotion::ConflictFindParallelAssignment::PairCover:
+        return "pair_cover";
+    case comotion::ConflictFindParallelAssignment::AllRobotsRoundRobin:
+        return "round_robin";
+    case comotion::ConflictFindParallelAssignment::BalancedPairCover:
+        return "balanced_pair_cover";
+    case comotion::ConflictFindParallelAssignment::PairFirstGreedy:
+        return "pair_first_greedy";
+    case comotion::ConflictFindParallelAssignment::CyclicCoverGreedy:
+        return "cyclic_cover_greedy";
     }
     return "unknown";
 }
@@ -1185,6 +1206,62 @@ void ParallelARC::finalizeParallelArcPlannerStats(
     stats["parallel_arc_conflict_find_mode"] =
         parallelArcConflictFindModeStr(conflict_find_mode_);
     stats["parallel_arc_conflict_find_horizon"] = conflict_find_horizon_;
+    stats["parallel_arc_conflict_find_assignment"] =
+        parallelArcConflictFindAssignmentStr(
+            conflict_find_parallel_assignment_);
+    if (conflict_find_parallel_assignment_ ==
+            ConflictFindParallelAssignment::BalancedPairCover &&
+        problem_ && problem_->numRobots() > 1 && worker_processes_ <= 16) {
+        const auto assignment = detail::cachedBalancedPairCoverAssignment(
+            static_cast<std::size_t>(problem_->numRobots()),
+            static_cast<std::size_t>(worker_processes_));
+        std::vector<std::size_t> robot_counts;
+        robot_counts.reserve(assignment->worker_robots.size());
+        for (const auto &robots : assignment->worker_robots)
+            robot_counts.push_back(robots.size());
+        stats["parallel_arc_conflict_find_pair_counts_by_worker"] =
+            assignment->worker_pair_counts;
+        stats["parallel_arc_conflict_find_robot_counts_by_worker"] =
+            std::move(robot_counts);
+        stats["parallel_arc_conflict_find_load_bound"] =
+            assignment->load_bound;
+        stats["parallel_arc_conflict_find_cover_bound"] =
+            assignment->cover_bound;
+        stats["parallel_arc_conflict_find_controlled_spill_pairs"] =
+            assignment->controlled_spill_pairs;
+    } else if (conflict_find_parallel_assignment_ ==
+                   ConflictFindParallelAssignment::PairFirstGreedy &&
+               problem_ && problem_->numRobots() > 1) {
+        const auto assignment = detail::cachedPairFirstGreedyAssignment(
+            static_cast<std::size_t>(problem_->numRobots()),
+            static_cast<std::size_t>(worker_processes_));
+        std::vector<std::size_t> robot_counts;
+        robot_counts.reserve(assignment->worker_robots.size());
+        for (const auto &robots : assignment->worker_robots)
+            robot_counts.push_back(robots.size());
+        stats["parallel_arc_conflict_find_pair_counts_by_worker"] =
+            assignment->worker_pair_counts;
+        stats["parallel_arc_conflict_find_robot_counts_by_worker"] =
+            std::move(robot_counts);
+        stats["parallel_arc_conflict_find_load_bound"] =
+            assignment->load_bound;
+    } else if (conflict_find_parallel_assignment_ ==
+                   ConflictFindParallelAssignment::CyclicCoverGreedy &&
+               problem_ && problem_->numRobots() > 1) {
+        const auto assignment = detail::cachedCyclicCoverGreedyAssignment(
+            static_cast<std::size_t>(problem_->numRobots()),
+            static_cast<std::size_t>(worker_processes_));
+        std::vector<std::size_t> robot_counts;
+        robot_counts.reserve(assignment->worker_robots.size());
+        for (const auto &robots : assignment->worker_robots)
+            robot_counts.push_back(robots.size());
+        stats["parallel_arc_conflict_find_pair_counts_by_worker"] =
+            assignment->worker_pair_counts;
+        stats["parallel_arc_conflict_find_robot_counts_by_worker"] =
+            std::move(robot_counts);
+        stats["parallel_arc_conflict_find_target_check_load"] =
+            assignment->target_check_load;
+    }
     stats["parallel_arc_conflict_find_workers"] =
         conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel
             ? worker_processes_
@@ -1374,6 +1451,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             ParallelArcConflictFindMode::SegmentParallel) {
             options.conflict_find_parallel_workers = effective_workers;
             options.conflict_find_parallel_horizon = conflict_find_horizon_;
+            options.conflict_find_parallel_assignment =
+                conflict_find_parallel_assignment_;
         }
         ConflictChecker conflict_checker(problem_->collisionChecker());
         std::vector<std::size_t> next_t_begin_by_pair;
@@ -1382,8 +1461,10 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         const auto conflict_detection_tree_cpu_start =
             processTreeCpuUsageSnapshot();
         ConflictFindTimingInstrumentation conflict_find_timing;
-        options.conflict_find_timing_instrumentation =
-            &conflict_find_timing;
+        if (validationInstrumentationEnabled()) {
+            options.conflict_find_timing_instrumentation =
+                &conflict_find_timing;
+        }
         std::vector<SubproblemConflict> conflicts = conflict_checker.findConflicts(
             solution_paths_, ptrs, options, 0, effective_workers, true,
             [this](const Conflict &conflict) {
@@ -2086,7 +2167,6 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             const std::uint32_t worker_seed =
                 workerPlanningSeed(planning_seed_, batch_index,
                                    static_cast<int>(task_index),
-                                   slot.slot_index,
                                    static_cast<int>(attempt_index));
             slot.planning_seed = worker_seed;
             RepairWorkerCommand command;
@@ -2690,6 +2770,8 @@ bool ParallelARC::runConflictDetectionAblation(double timeLimit) {
     if (conflict_find_mode_ == ParallelArcConflictFindMode::SegmentParallel) {
         options.conflict_find_parallel_workers = effective_workers;
         options.conflict_find_parallel_horizon = conflict_find_horizon_;
+        options.conflict_find_parallel_assignment =
+            conflict_find_parallel_assignment_;
     }
     ConflictChecker conflict_checker(problem_->collisionChecker());
     std::vector<std::size_t> next_t_begin_by_pair;
@@ -2698,8 +2780,10 @@ bool ParallelARC::runConflictDetectionAblation(double timeLimit) {
     const auto conflict_detection_tree_cpu_start =
         processTreeCpuUsageSnapshot();
     ConflictFindTimingInstrumentation conflict_find_timing;
-    options.conflict_find_timing_instrumentation =
-        &conflict_find_timing;
+    if (validationInstrumentationEnabled()) {
+        options.conflict_find_timing_instrumentation =
+            &conflict_find_timing;
+    }
     const std::vector<SubproblemConflict> conflicts = conflict_checker.findConflicts(
         solution_paths_, ptrs, options, 0, effective_workers, true,
         [this](const Conflict &conflict) {
