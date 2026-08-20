@@ -81,8 +81,8 @@ struct AppOptions {
     std::size_t composite_aorrtc_max_internal_samples = 10000;
     std::size_t composite_aorrtc_max_internal_vertices = 10000;
     unsigned int cooperative_rrt_worker_threads = 2;
-    int arc_initial_window = 400;
-    double arc_expansion_step = 400.0;
+    int arc_initial_window = 200;
+    double arc_expansion_step = 200.0;
     std::string arc_expansion_policy = "linear";
     std::string arc_expansion_multipliers = "1,1,1,2,2,2,4,8";
     std::optional<std::string> arc_initial_valid_expansion_policy;
@@ -105,7 +105,7 @@ struct AppOptions {
     bool arc_local_composite_use_makespan_metric = false;
     bool arc_simplify_initial_solutions = true;
     bool arc_simplify_conflict_solutions = false;
-    std::string arc_local_solvers = "both";
+    std::string arc_local_solvers = "composite";
     unsigned int arc_local_prioritized_max_iterations = 5;
     std::uint64_t ao_arc_local_bound_epsilon_timesteps = 1;
     unsigned int or_parallel_worker_processes = 1;
@@ -478,9 +478,9 @@ void printUsage(const char *prog) {
         << "  --drrt-local-connector <prioritized|synchronized> (default: prioritized)\n"
         << "  --drrt-exclude-roadmap-build-time\n"
         << "                         Give dRRT tensor search the full time limit after PRM* build\n"
-        << "  --arc-initial-window <n>\n"
-        << "  --arc-expansion-step <x>\n"
-        << "  --arc-expansion-policy <linear|logarithmic|exponential|multiplied> (baseline ARC only)\n"
+        << "  --arc-initial-window <n> (default: 200)\n"
+        << "  --arc-expansion-step <x> (default: 200)\n"
+        << "  --arc-expansion-policy <linear|logarithmic|exponential|multiplied> (baseline ARC only; default: linear)\n"
         << "  --arc-expansion-multipliers <csv> (baseline ARC only; default: 1,1,1,2,2,2,4,8)\n"
         << "  --arc-initial-valid-expansion-policy <linear|logarithmic|exponential|multiplied> (baseline ARC only; default: main policy)\n"
         << "  --arc-initial-valid-expansion-step <x> (baseline ARC only; default: main step)\n"
@@ -506,7 +506,7 @@ void printUsage(const char *prog) {
         << "  --aorrtc-restart-effort <n> Set CompositeAORRTC sample/vertex caps\n"
         << "  --aorrtc-max-internal-samples <n>\n"
         << "  --aorrtc-max-internal-vertices <n>\n"
-        << "  --arc-local-solvers <both|prioritized|composite> (default: both)\n"
+        << "  --arc-local-solvers <both|prioritized|composite> (default: composite)\n"
         << "  --arc-local-prioritized-max-iterations <n> (default: 5; 0 disables cap)\n"
         << "  --ao-arc-local-bound-epsilon-timesteps <n> (default: 1; 0 disables)\n"
         << "  --cooperative-rrt-worker-threads <n>\n"
