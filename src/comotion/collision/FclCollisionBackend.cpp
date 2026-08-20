@@ -1,5 +1,6 @@
 #include "comotion/collision/detail/CollisionBackend.h"
 #include "comotion/collision/detail/ValidationUtils.h"
+#include "comotion/planning/detail/PosixProcess.h"
 
 #include <fcl/geometry/bvh/BVH_model.h>
 #include <fcl/geometry/shape/box.h>
@@ -1775,6 +1776,7 @@ private:
                 throw std::runtime_error(
                     "Process-parallel FCL conflict finder socketpair failed");
             }
+            const pid_t parent_pid = ::getpid();
             const pid_t pid = ::fork();
             if (pid < 0) {
                 ::close(fds[0]);
@@ -1784,6 +1786,8 @@ private:
                     "Process-parallel FCL conflict finder fork failed");
             }
             if (pid == 0) {
+                if (!comotion::detail::armParentDeathSignal(parent_pid))
+                    _exit(3);
                 ::close(fds[0]);
                 const int exit_code = workerMain(fds[1], worker);
                 ::close(fds[1]);

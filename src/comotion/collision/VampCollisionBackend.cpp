@@ -5,6 +5,7 @@
 #include "comotion/collision/detail/PairCoveringDesign.h"
 #include "comotion/collision/detail/VampPackingUtils.h"
 #include "comotion/collision/detail/ValidationUtils.h"
+#include "comotion/planning/detail/PosixProcess.h"
 
 #include <algorithm>
 #include <array>
@@ -2624,6 +2625,7 @@ private:
                 throw std::runtime_error(
                     "Process-parallel VAMP conflict finder socketpair failed");
             }
+            const pid_t parent_pid = ::getpid();
             const pid_t pid = ::fork();
             if (pid < 0) {
                 ::close(fds[0]);
@@ -2633,6 +2635,8 @@ private:
                     "Process-parallel VAMP conflict finder fork failed");
             }
             if (pid == 0) {
+                if (!comotion::detail::armParentDeathSignal(parent_pid))
+                    _exit(3);
                 ::close(fds[0]);
                 const int exit_code = workerMain(fds[1], worker);
                 ::close(fds[1]);

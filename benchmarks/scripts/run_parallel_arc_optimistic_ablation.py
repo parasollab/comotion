@@ -16,6 +16,7 @@ sys.dont_write_bytecode = True
 from benchmark_runner_common import (
     CASE_CATALOG,
     DEFAULT_BUILD_DIR,
+    DEFAULT_PARALLEL_ARC_CONFLICT_FIND_ASSIGNMENT,
     DEFAULT_RESULTS_DIR,
     PlannerVariant,
     build_trial_specs,
@@ -311,6 +312,8 @@ def write_summary(path: Path, rows: Sequence[dict[str, Any]]) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.jobs != 1:
+        raise RuntimeError("The final campaign requires --jobs 1")
     output_root = (
         args.output_root
         if args.output_root is not None
@@ -388,8 +391,13 @@ def main() -> int:
                 "top_level_trial_jobs": args.jobs,
                 "validation_instrumentation": False,
                 "arc_repair_seed_schedule": (
-                    "reuse_unique_outer_trial_or_worker_seed"
+                    "unique per outer trial, logical repair batch/task, and "
+                    "attempt; independent of worker slot"
                 ),
+                "parallel_arc_conflict_find_assignment": (
+                    DEFAULT_PARALLEL_ARC_CONFLICT_FIND_ASSIGNMENT
+                ),
+                "parallel_arc_local_or_multi_start": True,
                 "trial_process_group_cleanup_required": True,
                 "arc_profile_args": list(PANDA_ARC_PROFILE_ARGS),
             },

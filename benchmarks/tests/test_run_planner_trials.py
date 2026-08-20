@@ -225,7 +225,7 @@ class PlannerTrialRunnerTest(unittest.TestCase):
                     runner.planner_params_to_args(params),
                 )
 
-    def test_parallel_arc_uses_balanced_pair_cover_by_default(self) -> None:
+    def test_parallel_arc_uses_cyclic_cover_greedy_by_default(self) -> None:
         param_doc = runner.read_json_file(
             REPO_ROOT / "benchmarks" / "configs" / "planner_trial_params.json"
         )
@@ -237,13 +237,13 @@ class PlannerTrialRunnerTest(unittest.TestCase):
         )
         self.assertEqual(
             params["parallel_arc_conflict_find_assignment"],
-            "balanced_pair_cover",
+            "cyclic_cover_greedy",
         )
         args = runner.planner_params_to_args(params)
         assignment_index = args.index(
             "--parallel-arc-conflict-find-assignment"
         )
-        self.assertEqual(args[assignment_index + 1], "balanced_pair_cover")
+        self.assertEqual(args[assignment_index + 1], "cyclic_cover_greedy")
 
         common_args = common.effective_variant_extra_args(
             common.PlannerVariant(
@@ -256,7 +256,7 @@ class PlannerTrialRunnerTest(unittest.TestCase):
             common_args,
             (
                 "--parallel-arc-conflict-find-assignment",
-                "balanced_pair_cover",
+                "cyclic_cover_greedy",
             ),
         )
 

@@ -133,7 +133,7 @@ struct AppOptions {
     std::string parallel_arc_conflict_strategy = "greedy";
     std::string parallel_arc_conflict_find_mode = "segment_parallel";
     std::string parallel_arc_conflict_find_assignment =
-        "balanced_pair_cover";
+        "cyclic_cover_greedy";
     std::string parallel_arc_conflict_batch_mode = "optimistic";
     std::size_t parallel_arc_conflict_find_horizon = 200;
     bool parallel_arc_conflict_ablation_only = false;
@@ -1050,7 +1050,7 @@ void printUsage(const char *prog) {
         << "  --parallel-arc-strategy <synchronous|asynchronous>\n"
         << "  --parallel-arc-conflict-strategy <greedy|spatial_distribution>\n"
         << "  --parallel-arc-conflict-find-mode <sequential|segment_parallel>\n"
-        << "  --parallel-arc-conflict-find-assignment <auto|pair_cover|round_robin|balanced_pair_cover|pair_first_greedy|cyclic_cover_greedy> (default: balanced_pair_cover)\n"
+        << "  --parallel-arc-conflict-find-assignment <auto|pair_cover|round_robin|balanced_pair_cover|pair_first_greedy|cyclic_cover_greedy> (default: cyclic_cover_greedy)\n"
         << "  --parallel-arc-conflict-batch-mode <optimistic|independent_only>\n"
         << "  --parallel-arc-conflict-find-horizon <n>\n"
         << "  --parallel-arc-conflict-ablation-only\n"

@@ -1,5 +1,6 @@
 #include "comotion/planning/OrParallelPlanner.h"
 
+#include "comotion/planning/detail/PosixProcess.h"
 #include "comotion/planning/PlanningRng.h"
 #include "comotion/planning/PlanningSeed.h"
 
@@ -219,6 +220,7 @@ ompl::base::PlannerStatus OrParallelPlanner::solve(double timeLimit) {
 
         const std::uint32_t worker_seed =
             orParallelWorkerPlanningSeed(planning_seed_, static_cast<int>(i));
+        const pid_t parent_pid = ::getpid();
         const pid_t pid = ::fork();
         if (pid < 0) {
             ::unlink(result_template);
@@ -227,6 +229,9 @@ ompl::base::PlannerStatus OrParallelPlanner::solve(double timeLimit) {
         }
 
         if (pid == 0) {
+            if (!comotion::detail::armParentDeathSignal(parent_pid))
+                _exit(3);
+
             WorkerResult result;
             result.worker_index = static_cast<int>(i);
             result.worker_seed = worker_seed;

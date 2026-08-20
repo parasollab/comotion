@@ -35,7 +35,7 @@ else:
 _MPL_CACHE_DIR = None
 _CSV_WRITE_LOCK = threading.Lock()
 PARALLEL_ARC_ASSIGNMENT_FLAG = "--parallel-arc-conflict-find-assignment"
-DEFAULT_PARALLEL_ARC_CONFLICT_FIND_ASSIGNMENT = "balanced_pair_cover"
+DEFAULT_PARALLEL_ARC_CONFLICT_FIND_ASSIGNMENT = "cyclic_cover_greedy"
 
 
 def effective_variant_extra_args(variant: "PlannerVariant") -> tuple[str, ...]:

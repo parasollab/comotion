@@ -5,6 +5,7 @@
 #include "comotion/collision/detail/CyclicCoverGreedyAssignment.h"
 #include "comotion/collision/detail/PairFirstGreedyAssignment.h"
 #include "comotion/planning/PlanningRng.h"
+#include "comotion/planning/detail/PosixProcess.h"
 
 #include <boost/archive/binary_iarchive.hpp>
 #include <boost/archive/binary_oarchive.hpp>
@@ -762,12 +763,16 @@ bool ParallelARC::planInitialIndividualPathsWithWorkers(
 
     bool launch_failed = false;
     for (unsigned i = 0; i < effective_workers; ++i) {
+        const pid_t parent_pid = ::getpid();
         const pid_t pid = ::fork();
         if (pid < 0) {
             launch_failed = true;
             break;
         }
         if (pid == 0) {
+            if (!comotion::detail::armParentDeathSignal(parent_pid))
+                _exit(3);
+
             for (unsigned j = 0; j < effective_workers; ++j) {
                 if (j == i) {
                     closeFd(states[j].command_pipe[1]);
@@ -1874,6 +1879,7 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             }
 
             const auto launch_start = Clock::now();
+            const pid_t parent_pid = ::getpid();
             const pid_t pid = ::fork();
             if (pid < 0) {
                 closeFd(slot.command_pipe[0]);
@@ -1884,6 +1890,9 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             }
 
             if (pid == 0) {
+                if (!comotion::detail::armParentDeathSignal(parent_pid))
+                    _exit(3);
+
                 for (std::size_t j = 0; j < slots.size(); ++j) {
                     if (slots[j].slot_index == slot.slot_index) {
                         closeFd(slots[j].command_pipe[1]);
