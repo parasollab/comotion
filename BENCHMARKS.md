@@ -287,6 +287,11 @@ different settings. Use `run_parallel_arc_2d.py` and
 `run_parallel_arc_panda.py`, not `run_planner_trials.py`, for the final P-ARC
 parameter profiles.
 
+The first public release supports the method-based VA-MRMP comparisons across
+all three collision backends with `--backends vamp,sphere,fcl`. It does not
+include the separate validation-primitive trace/replay experiment or its
+corpus-generation tooling.
+
 The heterogeneous PP-ST-RRT profile uses initial batch size 4096, initial time
 factor 2, time-factor increase 2, first-solution return, and rewiring off.
 Priorities are seed-shuffled, with Pandas shuffled first and flying spheres
@@ -294,8 +299,6 @@ shuffled separately after them.
 
 VAMP planning strategy is selected by the planner parameter file. The paper
 default uses combined validation ordering with rake packing for every planner.
-The validation-timing app still selects each named VAMP variant explicitly when
-comparing validation strategies.
 
 Use a dry run to inspect every planned case and a sample of commands without
 creating an output directory:

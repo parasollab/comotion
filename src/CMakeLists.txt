@@ -102,7 +102,6 @@ set(COMOTION_PUBLIC_HEADERS
   comotion/collision/CollisionChecker.h
   comotion/collision/ConflictChecker.h
   comotion/collision/ObstacleShapes.h
-  comotion/collision/ValidationTrace.h
   comotion/collision/ValidationTypes.h
   comotion/planning/AOARC.h
   comotion/planning/AORRTCUtils.h
