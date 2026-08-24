@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use CoMotion, please cite the preferred citation below."
 title: "CoMotion: Coordinated Motion Planning for Multi-Robot Systems"
 version: 0.1.0
-date-released: 2026-06-26
+date-released: 2026-08-24
 license: BSD-3-Clause
 authors:
   - family-names: Motes
@@ -49,4 +49,3 @@ references:
     journal: "arXiv preprint arXiv:2606.27495"
     year: 2026
     url: "https://doi.org/10.48550/arXiv.2606.27495"
-
