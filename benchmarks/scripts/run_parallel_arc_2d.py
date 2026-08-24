@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the finalized P-ARC 2D scaling and paper comparison campaign.
+"""Reproduce the final P-ARC 2D scaling and paper comparison experiments.
 
 The worker-scaling phase runs first.  For each scenario, robot counts double
 from four and the complete ARC/P-ARC worker matrix is run at every size.  The
@@ -37,6 +37,7 @@ from benchmark_runner_common import (
     finish_outputs,
     load_csv_rows,
     run_trials,
+    timestamp,
     truthy,
     write_csv,
 )
@@ -49,7 +50,7 @@ COLLISION_BACKEND = "vamp"
 RESOLUTION = 128
 MAX_CORES = 16
 ARC_SUCCESS_STOP_COUNT = len(SEEDS) // 2
-DEFAULT_OUTPUT_ROOT = DEFAULT_RESULTS_DIR / "parc_final_8_20"
+DEFAULT_OUTPUT_ROOT = DEFAULT_RESULTS_DIR / f"parallel_arc_2d_{timestamp()}"
 
 SCENARIOS = ("mobile_parallel", "mobile_circle", "planar_cross")
 SCALING_CAPS = {
@@ -90,7 +91,7 @@ MOBILE_ARC_ARGS = (
     "composite",
 )
 
-# This is the final planar profile selected by the August 19 experiments.
+# Final Planar Cross profile selected for the P-ARC paper experiments.
 PLANAR_ARC_ARGS = (
     "--arc-initial-window",
     "100",
@@ -421,8 +422,9 @@ def experiment_config() -> dict[str, object]:
         }
         variant_profiles[scenario] = variants
     return {
-        "schema": "comotion.parc_final_2d_campaign.v1",
-        "paper": "papers/updated_parallel_arc.pdf",
+        "schema": "comotion.parallel_arc_2d.v1",
+        "paper": "P-ARC: Exploiting Subproblem Independence for Parallel Multi-Robot Motion Planning",
+        "paper_doi": "https://doi.org/10.48550/arXiv.2606.27625",
         "phase_order": ["p_arc_scaling", "main_2d_comparison"],
         "panda_experiments_included": False,
         "seeds": list(SEEDS),
@@ -488,7 +490,7 @@ def write_progress(
     write_json(
         path,
         {
-            "schema": "comotion.parc_final_2d_progress.v1",
+            "schema": "comotion.parallel_arc_2d_progress.v1",
             "updated_utc": utc_now(),
             "current_phase": phase_name,
             "scaling_decisions": list(scaling_decisions),

@@ -42,6 +42,10 @@ the stable API:
 `USTRRTstar` is installed because `STCBS` exposes `USTRRTstar::RewireMode` in
 its public configuration API.
 
+`ParallelARC` also exposes the experimental conflict-find assignment modes
+declared in `ValidationTypes.h`. The public P-ARC reproduction profile selects
+`CyclicCoverGreedy`; the other modes remain available for the paper ablations.
+
 ## Source-Only Internals
 
 The following headers are intentionally not installed:

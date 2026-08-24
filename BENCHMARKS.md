@@ -1,7 +1,10 @@
 # Benchmarks
 
-The public benchmark surface is intentionally small:
+The public benchmark surface consists of the exact paper reproduction runners
+plus smaller exploratory runners:
 
+- Parallel ARC 2D and Panda Cage paper matrices
+- Parallel ARC conflict-assignment and optimistic-batching ablations
 - feasibility: cumulative exact-solution success over runtime
 - anytime: cumulative success plus median current-best makespan over runtime
 - multi-core: feasibility runs comparing ARC and ParallelARC worker counts
@@ -18,6 +21,12 @@ runners skip plots and still write the machine-readable outputs.
 
 Multi-core runs exercise ParallelARC's POSIX process-based worker path, so they
 are intended for Linux-style environments with `fork`, pipes, and signals.
+On Linux, worker processes arm a parent-death signal so interrupted trials do
+not leave nested planning or collision-checking workers running.
+
+Detailed collision-validation timing is disabled for the final paper profiles
+because it adds counters to hot paths. Set
+`COMOTION_VALIDATION_INSTRUMENTATION=1` only for dedicated profiling runs.
 
 ## Build
 
@@ -59,6 +68,55 @@ python3 /path/to/comotion-install/share/comotion/benchmarks/scripts/run_feasibil
   --cases default \
   --num-seeds 5 \
   --time-limit 60
+```
+
+### Parallel ARC Paper Reproduction
+
+These are the canonical first-release entry points for the final P-ARC
+experiments:
+
+```bash
+python3 benchmarks/scripts/run_parallel_arc_2d.py --dry-run
+python3 benchmarks/scripts/run_parallel_arc_panda.py --dry-run
+
+python3 benchmarks/scripts/run_parallel_arc_2d.py \
+  --output-root benchmarks/results/parallel_arc_2d
+python3 benchmarks/scripts/run_parallel_arc_panda.py \
+  --output-root benchmarks/results/parallel_arc_panda
+```
+
+Both runners execute one top-level trial at a time, allow planners to use up to
+16 internal workers, retain per-trial metrics, record the complete effective
+command matrix, and resume compatible completed trials. The 2D suite uses 30
+seeds and a 30-second time limit. The Panda suite uses team sizes 4, 8, and 16,
+five tasks, ten seeds per task, and a 100-second time limit.
+
+The final profiles are also the workload-executable defaults for these cases:
+
+| Benchmark | ARC window profile | Local repair | P-ARC profile |
+|---|---|---|---|
+| Mobile Parallel/Circle | initial 200; linear step 200; symmetric initial-valid expansion; C-space margin/range 2/2 | composite, 5,000 samples; simplify initial paths only | initial-solution OR on; duplicate repair attempts off; horizon 400 |
+| Planar Cross | initial 100; exponential factor 1.05; initial-valid linear step 10 and asymmetric expansion; C-space margin/range 1/0.5 | composite, 50,000 samples; simplify initial and conflict paths | initial-solution OR on; duplicate repair attempts off; horizon 400 |
+| Panda Cage | initial 20; exponential factor 1.05; initial-valid linear step 20 and asymmetric expansion; C-space margin/range 2/2 | composite, 250,000 samples with makespan metric; simplify initial paths only | initial-solution OR on; duplicate repair attempts on; horizon 200 |
+
+All three use VAMP, resolution 128, synchronous repair batches, greedy conflict
+selection, segment-parallel conflict finding, optimistic independent conflict
+batches, and `cyclic_cover_greedy` worker assignment. The runners pass these
+values explicitly as well as relying on defaults, preventing later default
+changes from silently altering reproduction runs.
+
+The 2D runner first evaluates ARC/P-ARC worker scaling, then the main method
+comparison, reusing matching ARC and P-ARC-16 rows. It includes the first team
+size at which ARC succeeds on at most half of its trials, then stops scaling
+that scenario. The Panda runner applies the same zero-success pruning rule used
+by the final campaign when advancing from 4 to 8 to 16 robots.
+
+The paper ablations are separate public entry points:
+
+```bash
+python3 benchmarks/scripts/run_parallel_arc_conflict_ablation.py --dry-run
+python3 benchmarks/scripts/run_parallel_arc_optimistic_ablation.py \
+  --num-seeds 10 --task-indices 0,1,2,3,4 --time-limit 100 --jobs 1
 ```
 
 ### Feasibility
@@ -104,11 +162,11 @@ python3 benchmarks/scripts/run_multicore.py \
 This compares ARC against ParallelARC with the requested worker-process counts
 and writes cumulative success plots.
 
-By default, ParallelARC plans different robots in parallel during initial
-solution construction but does not duplicate a robot's initial query. Add
-`--parallel-arc-initial-solution-or` to any runner, or to a direct
-`--algorithm parallel_arc` executable run, to let spare initial-planning workers
-race duplicate attempts and keep the first successful path.
+ParallelARC can plan different robots in parallel during initial solution
+construction. The final P-ARC profiles also enable initial-solution OR, letting
+spare initial-planning workers race duplicate attempts and keep the first
+successful path. Generic runs can disable it with
+`--no-parallel-arc-initial-solution-or`.
 
 Paper-style P-ARC presets are available through `--variant-set`. Use
 `--dry-run` first to inspect the generated command matrix without launching the
@@ -143,8 +201,9 @@ from that worker's distinct OR planning seed. Use
 `--or-pp-strrt-worker-counts` to override the default 16-worker paper setting,
 or `--variant-set paper-or-pp-strrt` to run only that baseline.
 The conflict-detection horizon ablation is available as
-`paper-horizon-ablation`. Parallel conflict detection always distributes the
-pair frontier uniformly among workers in round-robin order.
+`paper-horizon-ablation`. The final profile uses cyclic-cover greedy assignment;
+round-robin, pair-cover, balanced pair-cover, and pair-first greedy remain
+available for controlled comparisons.
 
 The optimistic-conflict batching ablation runs full P-ARC planning trials on
 the 8-robot Panda Cage benchmark and preserves per-trial metrics JSON so
@@ -221,6 +280,12 @@ profiles, not independent per-size sweeps. Planner-specific overrides can be
 placed under `planners` at the global, scenario, or robot-count level; the
 legacy key `methods` is still accepted for the same purpose. Shared defaults
 are resolved first, then planner-specific overrides.
+
+Those planner/backend replication profiles reproduce the VA-MRMP evaluation
+and intentionally override workload-executable defaults where that paper used
+different settings. Use `run_parallel_arc_2d.py` and
+`run_parallel_arc_panda.py`, not `run_planner_trials.py`, for the final P-ARC
+parameter profiles.
 
 The heterogeneous PP-ST-RRT profile uses initial batch size 4096, initial time
 factor 2, time-factor increase 2, first-solution return, and rewiring off.

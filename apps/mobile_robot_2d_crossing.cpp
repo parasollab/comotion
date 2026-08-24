@@ -111,8 +111,8 @@ struct AppOptions {
     unsigned int or_parallel_worker_processes = 1;
     unsigned int parallel_arc_worker_processes = 2;
     bool parallel_arc_parallel_initial_plans = true;
-    bool parallel_arc_initial_solution_or = false;
-    bool parallel_arc_repair_duplicate_attempts = true;
+    bool parallel_arc_initial_solution_or = true;
+    bool parallel_arc_repair_duplicate_attempts = false;
     std::string parallel_arc_strategy = "synchronous";
     std::string parallel_arc_conflict_strategy = "greedy";
     std::string parallel_arc_conflict_find_mode = "segment_parallel";
@@ -518,14 +518,14 @@ void printUsage(const char *prog) {
         << "  --or-parallel-worker-processes <n>\n"
         << "  --parallel-arc-worker-processes <n>\n"
         << "  --parallel-arc-parallel-initial-plans / --no-parallel-arc-parallel-initial-plans (default: on)\n"
-        << "  --parallel-arc-initial-solution-or / --no-parallel-arc-initial-solution-or (default: off)\n"
-        << "  --parallel-arc-repair-duplicate-attempts / --no-parallel-arc-repair-duplicate-attempts (default: on)\n"
+        << "  --parallel-arc-initial-solution-or / --no-parallel-arc-initial-solution-or (default: on)\n"
+        << "  --parallel-arc-repair-duplicate-attempts / --no-parallel-arc-repair-duplicate-attempts (default: off)\n"
         << "  --parallel-arc-strategy <synchronous|asynchronous>\n"
         << "  --parallel-arc-conflict-strategy <greedy|spatial_distribution>\n"
         << "  --parallel-arc-conflict-find-mode <sequential|segment_parallel>\n"
         << "  --parallel-arc-conflict-find-assignment <auto|pair_cover|round_robin|balanced_pair_cover|pair_first_greedy|cyclic_cover_greedy> (default: cyclic_cover_greedy)\n"
-        << "  --parallel-arc-conflict-batch-mode <optimistic|independent_only>\n"
-        << "  --parallel-arc-conflict-find-horizon <n>\n"
+        << "  --parallel-arc-conflict-batch-mode <optimistic|independent_only> (default: optimistic)\n"
+        << "  --parallel-arc-conflict-find-horizon <n> (default: 400)\n"
         << "  --parallel-arc-conflict-ablation-only\n"
         << "                         Generate initial individual paths, then time only one\n"
         << "                         ParallelARC conflict-detection call on those fixed paths\n"

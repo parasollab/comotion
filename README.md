@@ -145,12 +145,19 @@ benchmark runners.
 Common benchmark entry points:
 
 ```bash
+python3 benchmarks/scripts/run_parallel_arc_2d.py --dry-run
+python3 benchmarks/scripts/run_parallel_arc_panda.py --dry-run
 python3 benchmarks/scripts/run_feasibility.py --num-seeds 5
 python3 benchmarks/scripts/run_anytime.py --num-seeds 5
 python3 benchmarks/scripts/run_multicore.py --num-seeds 5
 python3 benchmarks/scripts/run_planner_trials.py --dry-run
 python3 benchmarks/scripts/plot_results.py path/to/results.csv --plot-backends
 ```
+
+The two Parallel ARC reproduction runners use the final paper parameters as
+the standard profiles for the Mobile, Planar Cross, and Panda Cage benchmarks.
+They pin the complete profiles in each generated experiment manifest even
+though the corresponding workload executables use the same defaults.
 
 Each runner writes `manifest.json`, `results.csv`, `solution_events.csv`,
 and the supported plots. See [BENCHMARKS.md](BENCHMARKS.md) for the output

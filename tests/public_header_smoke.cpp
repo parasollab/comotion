@@ -76,9 +76,14 @@ int main() {
                                    validation_options);
     const auto timed_validation =
         comotion::CollisionChecker::validationTimingStats();
-    if (timed_validation.total_validation_calls == 0 ||
-        timed_validation.composite_paths_calls == 0)
+    if (comotion::validationInstrumentationEnabled()) {
+        if (timed_validation.total_validation_calls == 0 ||
+            timed_validation.composite_paths_calls == 0)
+            return 2;
+    } else if (timed_validation.total_validation_calls != 0 ||
+               timed_validation.composite_paths_calls != 0) {
         return 2;
+    }
 
     comotion::CollisionChecker::resetValidationTimingStats();
     checker.isValidSingleFull(*robot, {-0.5, 0.0, 0.0});

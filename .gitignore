@@ -25,3 +25,15 @@ comotion-results/
 /benchmarks/scripts/analyze_arc_conflict_timings.py
 /benchmarks/scripts/export_validation_chunk_csv.py
 /benchmarks/scripts/plot_arc_runtime_*.py
+
+# Historical P-ARC campaign, recovery, and result-packaging helpers. Keep these
+# locally for provenance, but do not include them in the public source release.
+/benchmarks/scripts/analyze_parallel_arc_repair_or_trace.py
+/benchmarks/scripts/package_new_parc_results.py
+/benchmarks/scripts/recover_parc_final_8_20.py
+/benchmarks/scripts/run_2d_va_profile_parallel_arc.py
+/benchmarks/scripts/run_arc_panda_n8_parallel_defaults_15jobs.py
+/benchmarks/scripts/run_parallel_arc_refresh_30seed.py
+/benchmarks/scripts/run_parallel_arc_reproduction.py
+/benchmarks/scripts/verify_final_results_8_19_2026.py
+/benchmarks/scripts/verify_parallel_arc_refresh_30seed.py
