@@ -1,4 +1,4 @@
 [submodule "external/como-ompl"]
 	path = external/como-ompl
 	url = https://github.com/parasollab/como-ompl.git
-	branch = ao-arc-port
+	branch = cleanup-seeding-hooks
