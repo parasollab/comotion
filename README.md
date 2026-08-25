@@ -63,9 +63,17 @@ you need portable binaries for a different CPU target.
 ## Build
 
 ```bash
-git submodule update --init --recursive
+git clone --recurse-submodules https://github.com/parasollab/comotion.git
+cd comotion
 cmake -S . -B build
 cmake --build build
+```
+
+For an existing clone created without `--recurse-submodules`, initialize the
+bundled dependencies before configuring:
+
+```bash
+git submodule update --init --recursive
 ```
 
 CoMotion builds the bundled CoMotion OMPL fork from `external/como-ompl`; that
