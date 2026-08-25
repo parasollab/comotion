@@ -43,8 +43,8 @@ configuring the project, make sure these dependencies are available:
   CoMotion planner/app configuration paths.
 - Eigen3: used by robot kinematics, geometric state operations, OMPL headers,
   and VAMP integration.
-- FCL and `pkg-config`: provide the optional FCL collision backend and the CMake
-  discovery path used by CoMotion.
+- FCL and `pkg-config`: required to configure and build CoMotion; they provide
+  the FCL collision backend and its CMake discovery path.
 - nlohmann/json 3.11.3 or newer: used for app inputs, metrics JSON, benchmark
   manifests, and planner statistics. CMake fetches it by default when it is not
   installed.
