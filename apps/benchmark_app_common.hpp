@@ -373,6 +373,22 @@ std::string parallelArcConflictBatchModeValue(const Options &options) {
     return parallelArcConflictBatchModeValueImpl(options, 0);
 }
 
+template <typename Options>
+auto parallelArcConflictAblationOnlyValueImpl(const Options &options, int)
+    -> decltype(options.parallel_arc_conflict_ablation_only) {
+    return options.parallel_arc_conflict_ablation_only;
+}
+
+template <typename Options>
+bool parallelArcConflictAblationOnlyValueImpl(const Options &, long) {
+    return false;
+}
+
+template <typename Options>
+bool parallelArcConflictAblationOnlyValue(const Options &options) {
+    return parallelArcConflictAblationOnlyValueImpl(options, 0);
+}
+
 inline std::string normalizedVampValidationStrategyName(std::string value) {
     value = lowerAscii(std::move(value));
     std::replace(value.begin(), value.end(), '-', '_');
@@ -418,6 +434,8 @@ vampValidationStrategyName(const comotion::VampValidationStrategy &strategy) {
 
 inline void applyVampValidationStrategy(comotion::CollisionChecker &checker,
                                         const std::string &value) {
+    if (checker.backend() != comotion::CollisionChecker::Backend::Vamp)
+        return;
     checker.setVampValidationStrategy(parseVampValidationStrategy(value));
 }
 
@@ -477,6 +495,163 @@ parseDrrtLocalConnectorMode(const std::string &value) {
         return comotion::MRdRRT::LocalConnectorMode::Synchronized;
     }
     throw std::runtime_error("Unknown dRRT local connector mode: " + value);
+}
+
+template <typename Options>
+void validateSelectedPlannerOptions(const Options &options,
+                                    bool planning_requested = true) {
+    if (!planning_requested)
+        return;
+
+    if (options.collision_backend == comotion::CollisionChecker::Backend::Vamp)
+        (void)parseVampValidationStrategy(options.vamp_validation_strategy);
+
+    if (options.algorithm == "prioritized") {
+        if (options.strrt_initial_batch_size == 0)
+            throw std::runtime_error(
+                "--strrt-initial-batch-size must be at least 1");
+        if (options.strrt_initial_time_factor <= 1.0)
+            throw std::runtime_error(
+                "--strrt-initial-time-factor must be greater than 1.0");
+        if (options.strrt_time_bound_factor_increase <= 1.0)
+            throw std::runtime_error(
+                "--strrt-time-bound-factor-increase must be greater than 1.0");
+        (void)parseStrrtRewiring(options.strrt_rewiring);
+    }
+
+    const bool uses_drrt_options =
+        options.algorithm == "drrt" || options.algorithm == "drrt_star" ||
+        options.algorithm == "drrtstar" || options.algorithm == "ao_drrt" ||
+        options.algorithm == "ao-drrt";
+    if (uses_drrt_options) {
+        if (options.drrt_roadmap_size < 2)
+            throw std::runtime_error("--drrt-roadmap-size must be at least 2");
+        if (options.drrt_iterations_per_batch < 1)
+            throw std::runtime_error(
+                "--drrt-iterations-per-batch must be at least 1");
+        (void)parseDrrtCostMetric(options.drrt_cost_metric);
+        (void)parseDrrtTensorSearchMode(options.drrt_tensor_search);
+        (void)parseDrrtLocalConnectorMode(options.drrt_local_connector);
+    }
+
+    if (options.algorithm == "composite" &&
+        options.composite_rrt_range < 0.0) {
+        throw std::runtime_error("--composite-rrt-range must be non-negative");
+    }
+    if (options.algorithm == "composite_aorrtc") {
+        if (options.composite_aorrtc_max_internal_samples == 0)
+            throw std::runtime_error(
+                "--aorrtc-max-internal-samples must be at least 1");
+        if (options.composite_aorrtc_max_internal_vertices == 0)
+            throw std::runtime_error(
+                "--aorrtc-max-internal-vertices must be at least 1");
+    }
+    if (options.algorithm == "cooperative_composite" &&
+        options.cooperative_rrt_worker_threads == 0) {
+        throw std::runtime_error(
+            "--cooperative-rrt-worker-threads must be at least 1");
+    }
+
+    const bool uses_arc_options = options.algorithm == "arc" ||
+                                  options.algorithm == "ao_arc" ||
+                                  options.algorithm == "parallel_arc";
+    if (uses_arc_options) {
+        if (options.arc_initial_window < 1)
+            throw std::runtime_error("--arc-initial-window must be at least 1");
+        if (!std::isfinite(options.arc_expansion_step) ||
+            options.arc_expansion_step <= 0.0) {
+            throw std::runtime_error("--arc-expansion-step must be positive");
+        }
+        (void)parseArcExpansionPolicy(options.arc_expansion_policy);
+        (void)parseArcExpansionMultipliers(options.arc_expansion_multipliers);
+        if (options.arc_initial_valid_expansion_policy) {
+            (void)parseArcExpansionPolicy(
+                *options.arc_initial_valid_expansion_policy);
+        }
+        if (options.arc_initial_valid_expansion_step &&
+            (!std::isfinite(*options.arc_initial_valid_expansion_step) ||
+             *options.arc_initial_valid_expansion_step <= 0.0)) {
+            throw std::runtime_error(
+                "--arc-initial-valid-expansion-step must be positive");
+        }
+        if (options.arc_initial_valid_expansion_multipliers) {
+            (void)parseArcExpansionMultipliers(
+                *options.arc_initial_valid_expansion_multipliers);
+        }
+        if (options.arc_cspace_bound_margin < 0.0)
+            throw std::runtime_error(
+                "--arc-cspace-bound-margin must be non-negative");
+        if (options.arc_min_cspace_bound_range < 0.0)
+            throw std::runtime_error(
+                "--arc-min-cspace-bound-range must be non-negative");
+        if (options.arc_local_composite_range < 0.0)
+            throw std::runtime_error(
+                "--arc-local-composite-range must be non-negative");
+        (void)parseArcLocalSolverMode(options.arc_local_solvers);
+    }
+
+    if (options.or_parallel_worker_processes == 0)
+        throw std::runtime_error(
+            "--or-parallel-worker-processes must be at least 1");
+
+    if (options.algorithm == "parallel_arc") {
+        if (options.parallel_arc_worker_processes == 0)
+            throw std::runtime_error(
+                "--parallel-arc-worker-processes must be at least 1");
+        if (options.parallel_arc_strategy != "synchronous" &&
+            options.parallel_arc_strategy != "asynchronous") {
+            throw std::runtime_error("Unknown ParallelARC strategy: " +
+                                     options.parallel_arc_strategy);
+        }
+        if (options.parallel_arc_conflict_strategy != "greedy" &&
+            options.parallel_arc_conflict_strategy !=
+                "spatial_distribution") {
+            throw std::runtime_error(
+                "Unknown ParallelARC conflict strategy: " +
+                options.parallel_arc_conflict_strategy);
+        }
+        if (options.parallel_arc_conflict_find_mode != "sequential" &&
+            options.parallel_arc_conflict_find_mode != "segment_parallel") {
+            throw std::runtime_error(
+                "Unknown ParallelARC conflict-find mode: " +
+                options.parallel_arc_conflict_find_mode);
+        }
+        if (options.parallel_arc_conflict_find_mode == "segment_parallel") {
+            if (options.parallel_arc_conflict_find_horizon == 0) {
+                throw std::runtime_error(
+                    "--parallel-arc-conflict-find-horizon must be at least 1 "
+                    "for segment_parallel mode");
+            }
+            const auto assignment = parseParallelArcConflictFindAssignment(
+                options.parallel_arc_conflict_find_assignment);
+            if ((assignment ==
+                     comotion::ConflictFindParallelAssignment::PairFirstGreedy ||
+                 assignment == comotion::ConflictFindParallelAssignment::
+                                   CyclicCoverGreedy) &&
+                options.collision_backend !=
+                    comotion::CollisionChecker::Backend::Vamp) {
+                throw std::runtime_error(
+                    options.parallel_arc_conflict_find_assignment +
+                    " conflict assignment currently requires the VAMP "
+                    "collision backend");
+            }
+        }
+        (void)parseParallelArcConflictBatchMode(
+            parallelArcConflictBatchModeValue(options));
+        if (parallelArcConflictAblationOnlyValue(options) &&
+            options.or_parallel_worker_processes != 1) {
+            throw std::runtime_error(
+                "--parallel-arc-conflict-ablation-only does not support "
+                "outer OR parallelism");
+        }
+    }
+
+    if (options.algorithm == "stcbs") {
+        if (options.stcbs_max_ct_nodes < 1)
+            throw std::runtime_error("--stcbs-max-ct-nodes must be at least 1");
+        if (options.stcbs_max_samples < 1)
+            throw std::runtime_error("--stcbs-max-samples must be at least 1");
+    }
 }
 
 inline void writeJson(const json &doc, const std::filesystem::path &path,

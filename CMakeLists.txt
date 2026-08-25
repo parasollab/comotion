@@ -211,6 +211,12 @@ if(COMOTION_BUILD_TESTS)
     add_test(NAME or_parallel_planner_regression
              COMMAND or_parallel_planner_regression)
 
+    add_executable(benchmark_app_options_regression
+        tests/benchmark_app_options_regression.cpp)
+    target_link_libraries(benchmark_app_options_regression PRIVATE comotion)
+    add_test(NAME benchmark_app_options_regression
+             COMMAND benchmark_app_options_regression)
+
     add_executable(stcbs_regression
         tests/stcbs_regression.cpp)
     target_link_libraries(stcbs_regression PRIVATE comotion)
