@@ -3,10 +3,13 @@
 #include "comotion/planning/MakespanInformedSampler.h"
 #include "comotion/planning/MakespanCompositeStateSpace.h"
 #include "comotion/planning/PathSimplification.h"
+#include "comotion/planning/PlanningSeed.h"
 #include "comotion/planning/detail/PlannerInvariantUtils.h"
+#include "comotion/planning/detail/SeededOmpl.h"
 
 #include <ompl/base/ScopedState.h>
 #include <ompl/base/objectives/PathLengthOptimizationObjective.h>
+#include <ompl/base/samplers/informed/PathLengthDirectInfSampler.h>
 #include <ompl/base/spaces/RealVectorStateSpace.h>
 #include <ompl/geometric/PathGeometric.h>
 #include <ompl/geometric/SimpleSetup.h>
@@ -51,6 +54,91 @@ public:
         maxInternalVerticesIncrement = value;
     }
 };
+
+class SeededPathLengthObjective final
+    : public ob::PathLengthOptimizationObjective {
+public:
+    SeededPathLengthObjective(const ob::SpaceInformationPtr &si,
+                              std::uint_fast32_t sampler_seed,
+                              std::uint_fast32_t base_sampler_seed,
+                              std::uint_fast32_t uninformed_sampler_seed)
+        : ob::PathLengthOptimizationObjective(si),
+          sampler_seed_(sampler_seed),
+          base_sampler_seed_(base_sampler_seed),
+          uninformed_sampler_seed_(uninformed_sampler_seed) {}
+
+    ob::InformedSamplerPtr allocInformedStateSampler(
+        const ob::ProblemDefinitionPtr &prob_def,
+        unsigned int max_number_calls) const override {
+        auto sampler = std::make_shared<ob::PathLengthDirectInfSampler>(
+            prob_def, max_number_calls);
+        sampler->setLocalSeeds(sampler_seed_, base_sampler_seed_,
+                               uninformed_sampler_seed_);
+        return sampler;
+    }
+
+private:
+    std::uint_fast32_t sampler_seed_;
+    std::uint_fast32_t base_sampler_seed_;
+    std::uint_fast32_t uninformed_sampler_seed_;
+};
+
+class SeededAORRTC final : public og::AORRTC {
+public:
+    SeededAORRTC(const ob::SpaceInformationPtr &si,
+                 std::uint_fast32_t outer_seed,
+                 std::uint_fast32_t inner_seed,
+                 std::uint_fast32_t simplifier_seed)
+        : og::AORRTC(si), outer_seed_(outer_seed), inner_seed_(inner_seed),
+          simplifier_seed_(simplifier_seed) {
+        rng_.setLocalSeed(outer_seed_);
+    }
+
+    void setup() override {
+        og::AORRTC::setup();
+        rng_.setLocalSeed(outer_seed_);
+        aox_planner->setLocalSeed(inner_seed_);
+        if (psk_)
+            psk_->setLocalSeed(simplifier_seed_);
+    }
+
+private:
+    std::uint_fast32_t outer_seed_;
+    std::uint_fast32_t inner_seed_;
+    std::uint_fast32_t simplifier_seed_;
+};
+
+struct SolveLocalSeeds {
+    std::uint_fast32_t planner = 0;
+    std::uint_fast32_t simplifier = 0;
+    std::uint_fast32_t informed_sampler = 0;
+    std::uint_fast32_t informed_base_sampler = 0;
+    std::uint_fast32_t informed_uninformed_sampler = 0;
+    std::uint_fast32_t outer_planner = 0;
+    std::uint_fast32_t state_sampler = 0;
+};
+
+SolveLocalSeeds localSeeds(std::uint32_t planning_seed,
+                           std::uint64_t solve_domain) {
+    return {
+        aorrtcComponentSeed(planning_seed, solve_domain, 1),
+        aorrtcComponentSeed(planning_seed, solve_domain, 2),
+        aorrtcComponentSeed(planning_seed, solve_domain, 3),
+        aorrtcComponentSeed(planning_seed, solve_domain, 4),
+        aorrtcComponentSeed(planning_seed, solve_domain, 5),
+        aorrtcComponentSeed(planning_seed, solve_domain, 6),
+        aorrtcComponentSeed(planning_seed, solve_domain, 7),
+    };
+}
+
+void installStateSampler(const ob::StateSpacePtr &space,
+                         std::uint_fast32_t seed) {
+    space->setStateSamplerAllocator(
+        [seed](const ob::StateSpace *sampler_space) {
+            return std::make_shared<detail::SeededRealVectorStateSampler>(
+                sampler_space, seed);
+        });
+}
 
 struct RobotBlock {
     int robot_index = -1;
@@ -429,12 +517,25 @@ ob::SpaceInformationPtr makeCompositeSpaceInfo(
 
 void setCompositeOptimizationObjective(og::SimpleSetup &setup,
                                        const ob::SpaceInformationPtr &si,
-                                       bool use_makespan_metric) {
-    if (!use_makespan_metric)
+                                       bool use_makespan_metric,
+                                       const std::optional<SolveLocalSeeds>
+                                           &local_seeds) {
+    if (use_makespan_metric) {
+        std::optional<std::uint_fast32_t> sampler_seed;
+        if (local_seeds)
+            sampler_seed = local_seeds->informed_sampler;
+        setup.getProblemDefinition()->setOptimizationObjective(
+            std::make_shared<MakespanPathLengthObjective>(si, sampler_seed));
         return;
+    }
 
-    setup.getProblemDefinition()->setOptimizationObjective(
-        std::make_shared<MakespanPathLengthObjective>(si));
+    if (local_seeds) {
+        setup.getProblemDefinition()->setOptimizationObjective(
+            std::make_shared<SeededPathLengthObjective>(
+                si, local_seeds->informed_sampler,
+                local_seeds->informed_base_sampler,
+                local_seeds->informed_uninformed_sampler));
+    }
 }
 
 void requireExactEndpoints(const MultiRobotProblem &problem,
@@ -500,8 +601,18 @@ SolveResult solveSingleRobotBounded(const MultiRobotProblem &problem,
 
     auto si = problem.createSpaceInfo(robot_index);
     auto space = si->getStateSpace();
+    std::optional<SolveLocalSeeds> local_seeds;
+    if (options.planning_seed) {
+        local_seeds = localSeeds(
+            *options.planning_seed,
+            kPlanningSeedDomainAorrtcSingleBounded);
+        installStateSampler(space, local_seeds->state_sampler);
+    }
     og::SimpleSetup setup(si);
+    setCompositeOptimizationObjective(setup, si, false, local_seeds);
     auto planner = std::make_shared<CappedAOXRRTConnect>(si);
+    if (local_seeds)
+        planner->setLocalSeed(local_seeds->planner);
     if (options.max_internal_samples)
         planner->setMaxInternalSamples(*options.max_internal_samples);
     if (options.max_internal_vertices)
@@ -520,6 +631,8 @@ SolveResult solveSingleRobotBounded(const MultiRobotProblem &problem,
     }
     setup.setStartAndGoalStates(start, goal);
     setup.setup();
+    if (local_seeds && setup.getPathSimplifier())
+        setup.getPathSimplifier()->setLocalSeed(local_seeds->simplifier);
     const double bound_cost =
         timestepsToOmplCost(*options.cost_bound_timesteps, problem);
     planner->setPathCost(bound_cost);
@@ -579,8 +692,17 @@ SolveResult solveCompositeBounded(const MultiRobotProblem &problem,
     auto si = makeCompositeSpaceInfo(problem, robot_indices,
                                     options.use_makespan_metric);
     auto space = si->getStateSpace();
+    std::optional<SolveLocalSeeds> local_seeds;
+    if (options.planning_seed) {
+        local_seeds = localSeeds(
+            *options.planning_seed,
+            kPlanningSeedDomainAorrtcCompositeBounded);
+        installStateSampler(space, local_seeds->state_sampler);
+    }
     og::SimpleSetup setup(si);
     auto planner = std::make_shared<CappedAOXRRTConnect>(si);
+    if (local_seeds)
+        planner->setLocalSeed(local_seeds->planner);
     if (options.max_internal_samples)
         planner->setMaxInternalSamples(*options.max_internal_samples);
     if (options.max_internal_vertices)
@@ -592,8 +714,11 @@ SolveResult solveCompositeBounded(const MultiRobotProblem &problem,
     setCompositeState(problem, blocks, false, start.get());
     setCompositeState(problem, blocks, true, goal.get());
     setup.setStartAndGoalStates(start, goal);
-    setCompositeOptimizationObjective(setup, si, options.use_makespan_metric);
+    setCompositeOptimizationObjective(setup, si, options.use_makespan_metric,
+                                      local_seeds);
     setup.setup();
+    if (local_seeds && setup.getPathSimplifier())
+        setup.getPathSimplifier()->setLocalSeed(local_seeds->simplifier);
     const double bound_cost =
         timestepsToOmplCost(*options.cost_bound_timesteps, problem);
     planner->setPathCost(bound_cost);
@@ -660,8 +785,22 @@ SolveResult solveCompositeAnytime(const MultiRobotProblem &problem,
     auto si = makeCompositeSpaceInfo(problem, robot_indices,
                                     options.use_makespan_metric);
     auto space = si->getStateSpace();
+    std::optional<SolveLocalSeeds> local_seeds;
+    if (options.planning_seed) {
+        local_seeds = localSeeds(
+            *options.planning_seed,
+            kPlanningSeedDomainAorrtcCompositeAnytime);
+        installStateSampler(space, local_seeds->state_sampler);
+    }
     og::SimpleSetup setup(si);
-    auto planner = std::make_shared<og::AORRTC>(si);
+    std::shared_ptr<og::AORRTC> planner;
+    if (local_seeds) {
+        planner = std::make_shared<SeededAORRTC>(
+            si, local_seeds->outer_planner, local_seeds->planner,
+            local_seeds->simplifier);
+    } else {
+        planner = std::make_shared<og::AORRTC>(si);
+    }
     if (options.max_internal_samples)
         planner->setMaxInternalSamples(*options.max_internal_samples);
     if (options.max_internal_vertices)
@@ -673,7 +812,8 @@ SolveResult solveCompositeAnytime(const MultiRobotProblem &problem,
     setCompositeState(problem, blocks, false, start.get());
     setCompositeState(problem, blocks, true, goal.get());
     setup.setStartAndGoalStates(start, goal);
-    setCompositeOptimizationObjective(setup, si, options.use_makespan_metric);
+    setCompositeOptimizationObjective(setup, si, options.use_makespan_metric,
+                                      local_seeds);
 
     const auto solve_start = Clock::now();
     double best_reported_ompl_cost = std::numeric_limits<double>::infinity();

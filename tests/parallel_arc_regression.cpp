@@ -126,6 +126,7 @@ bool testParallelArcSolvesIndependentConflicts() {
     planner.setUseCspaceBounds(true);
     planner.setCspaceBoundMargin(2.0f);
     planner.setMinCspaceBoundRange(2.0);
+    planner.setVisualizationTraceEnabled(true);
 
     const auto status = planner.solve(10.0);
     if (!expectTrue("ParallelARC exact solution",
@@ -134,6 +135,12 @@ bool testParallelArcSolvesIndependentConflicts() {
     }
 
     const auto paths = planner.getSolutionPaths();
+    if (!expectTrue("ParallelARC visualization trace is captured",
+                    !planner.visualizationTrace().empty() &&
+                        planner.visualizationTrace().back()
+                            .conflict_scan_completed &&
+                        planner.visualizationTrace().back().conflicts.empty()))
+        return false;
     comotion::ConflictChecker checker(problem->collisionChecker());
     auto ptrs = problem->robotModelPtrs();
     const auto conflict = checker.findConflict(paths, ptrs);

@@ -100,6 +100,10 @@ int main() {
     arc.setPathSimplificationOptions(simplification_options);
     arc.setConflictPathSimplificationOptions(simplification_options);
     arc.setLocalCompositeRrtRange(0.5);
+    arc.setVisualizationTraceEnabled(true);
+    arc.setLocalPrioritizedStrrtReturnFirstSolution(false);
+    arc.setLocalPrioritizedStrrtRewiring(comotion::StrrtRewiring::Radius);
+    arc.setLocalPrioritizedStrrtPersistAtGoal(true);
     arc.setExpansionPolicy(
         comotion::ARC::ExpansionPolicy::CustomMultiplied);
     arc.setCustomExpansionMultipliers({1.0, 2.0, 4.0});
@@ -145,6 +149,7 @@ int main() {
     comotion::PrioritizedSTRRT prioritized_strrt;
     prioritized_strrt.setPriorityOrder({0});
     prioritized_strrt.setStrrtRewiring(comotion::StrrtRewiring::Off);
+    prioritized_strrt.setPathSimplificationOptions(simplification_options);
 
     comotion::STCBS stcbs;
     stcbs.setRewireMode(comotion::USTRRTstar::RewireMode::KNearest);
@@ -156,6 +161,7 @@ int main() {
 
     comotion::aorrtc::SolveOptions aorrtc_options;
     aorrtc_options.simplification_options = simplification_options;
+    aorrtc_options.planning_seed = 42;
 
     comotion::IKRequest ik_request;
     ik_request.target_position = Eigen::Vector3d{0.0, 0.0, 0.0};

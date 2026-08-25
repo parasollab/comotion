@@ -44,6 +44,29 @@
     #cross-section-toggle:disabled { opacity: 0.55; cursor: not-allowed; }
     #timestep-slider { flex: 1; min-width: 120px; max-width: 300px; }
     #canvas-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; }
+    #arc-panel {
+      position: fixed; bottom: 58px; left: 12px; z-index: 10; min-width: 250px; max-width: min(520px, calc(100vw - 24px));
+      font-size: 13px; color: #222; background: rgba(255,255,255,0.94);
+      border: 1px solid #d7d7d7; padding: 9px 12px; border-radius: 6px;
+    }
+    #arc-panel[hidden] { display: none; }
+    #arc-stage { font-weight: 600; }
+    #arc-detail { margin-top: 3px; color: #555; }
+    #arc-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 7px; }
+    .arc-legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .arc-swatch { width: 11px; height: 11px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.18); }
+    #arc-stage-box {
+      position: fixed; top: 72px; left: 12px; z-index: 20;
+      padding: 18px 24px; background: rgba(255,255,255,0.95);
+      border: 1px solid #d7d7d7; border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+      font-size: 48px; line-height: 1.1; font-weight: 700; cursor: move;
+      user-select: none; touch-action: none;
+    }
+    #arc-stage-box[hidden] { display: none; }
+    #arc-stage-label.conflict-detection { color: #d62828; }
+    #arc-stage-label.conflict-resolution { color: #1976d2; }
+    #arc-stage-label.complete { color: #2f9e44; }
     #help {
       position: fixed; bottom: 12px; left: 12px; font-size: 12px; color: #555;
       background: rgba(255,255,255,0.9); border: 1px solid #e0e0e0; padding: 8px 12px; border-radius: 6px;
@@ -73,6 +96,28 @@
     <input type="file" id="file-input" accept=".json" />
     <span id="timestep">Timestep 0 / 0</span>
     <button id="play-pause">Play</button>
+    <label class="toolbar-field" for="playback-speed-select">
+      <span>Speed</span>
+      <select id="playback-speed-select" title="Playback speed">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+        <option value="5">5×</option>
+        <option value="10">10×</option>
+        <option value="20">20×</option>
+        <option value="50">50×</option>
+        <option value="100">100×</option>
+      </select>
+    </label>
+    <label class="toolbar-field" for="playback-mode-select">
+      <span>Mode</span>
+      <select id="playback-mode-select" title="Playback mode">
+        <option value="solution">Solution path</option>
+        <option value="arc" disabled>ARC process</option>
+      </select>
+    </label>
     <label class="toolbar-field" for="palette-select">
       <span>Palette</span>
       <select id="palette-select" title="Robot color palette"></select>
@@ -83,6 +128,14 @@
     <input type="range" id="timestep-slider" min="0" max="0" value="0" />
   </div>
   <div id="canvas-container"></div>
+  <div id="arc-stage-box" role="status" aria-live="polite" hidden>
+    <span id="arc-stage-label"></span>
+  </div>
+  <div id="arc-panel" hidden>
+    <div id="arc-stage"></div>
+    <div id="arc-detail"></div>
+    <div id="arc-legend"></div>
+  </div>
   <div id="help">
     Left/Right: step ±1 | Shift+Left/Right: ±10 | Home/End: first/last | Space: play/pause
     <br />Camera: left-drag tumble · middle zoom · right pan
@@ -120,6 +173,6 @@
     }
   }
   </script>
-  <script type="module" src="js/app.js?v=24"></script>
+  <script type="module" src="js/app.js?v=28"></script>
 </body>
 </html>

@@ -84,6 +84,18 @@ const char *arcLocalSolverModeStr(comotion::ARC::LocalSolverMode mode) {
     return "unknown";
 }
 
+const char *strrtRewiringStr(comotion::StrrtRewiring mode) {
+    switch (mode) {
+    case comotion::StrrtRewiring::Off:
+        return "off";
+    case comotion::StrrtRewiring::Radius:
+        return "radius";
+    case comotion::StrrtRewiring::KNearest:
+        return "knearest";
+    }
+    return "unknown";
+}
+
 const char *arcExpansionPolicyStr(comotion::ARC::ExpansionPolicy policy) {
     switch (policy) {
     case comotion::ARC::ExpansionPolicy::Linear:
@@ -417,6 +429,48 @@ void ARC::resetArcSolveState() {
     conflict_find_critical_worker_total_wall_seconds_.clear();
     conflict_resolution_times_seconds_.clear();
     conflict_resolution_times_cpu_seconds_.clear();
+    visualization_trace_.clear();
+}
+
+void ARC::startVisualizationIteration(const std::vector<Path> &paths) {
+    if (!visualization_trace_enabled_)
+        return;
+    VisualizationIteration iteration;
+    iteration.paths = paths;
+    visualization_trace_.push_back(std::move(iteration));
+}
+
+void ARC::setVisualizationConflicts(
+    const std::vector<SubproblemConflict> &conflicts) {
+    if (!visualization_trace_enabled_)
+        return;
+    if (visualization_trace_.empty())
+        throw std::runtime_error(
+            "ARC visualization conflict batch has no path snapshot");
+    auto &iteration = visualization_trace_.back();
+    iteration.conflict_scan_completed = true;
+    iteration.conflicts = conflicts;
+}
+
+void ARC::appendVisualizationRepair(
+    std::size_t conflict_index, const std::vector<int> &robots,
+    int window_start_t, int window_end_t,
+    const std::vector<Path> &local_paths) {
+    if (!visualization_trace_enabled_)
+        return;
+    if (visualization_trace_.empty())
+        throw std::runtime_error(
+            "ARC visualization repair has no path snapshot");
+    if (robots.size() != local_paths.size())
+        throw std::runtime_error(
+            "ARC visualization repair path count does not match robot count");
+    VisualizationRepair repair;
+    repair.conflict_index = conflict_index;
+    repair.robots = robots;
+    repair.window_start_t = window_start_t;
+    repair.window_end_t = window_end_t;
+    repair.local_paths = local_paths;
+    visualization_trace_.back().repairs.push_back(std::move(repair));
 }
 
 void ARC::initializeConflictScanStarts(std::size_t robot_count) {
@@ -638,6 +692,7 @@ ARC::IndividualPlanResult ARC::planIndividualPath(
 
     if (global_makespan_bound_timesteps_) {
         aorrtc::SolveOptions options;
+        options.planning_seed = local_seed.value_or(planning_seed_);
         options.cost_bound_timesteps = *global_makespan_bound_timesteps_;
         options.simplify_solution = simplify_initial_solutions_;
         options.simplification_options = simplification_options_;
@@ -1098,13 +1153,20 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
                         current_event.attempt_root_planning_seed);
                 current_event.prioritized_planning_seed = prioritized_seed;
                 planner->setPlanningSeed(prioritized_seed);
-                planner->setPersistAtGoal(false); // ARC: robots leave subproblem
+                planner->setPersistAtGoal(
+                    local_prioritized_strrt_persist_at_goal_);
                 planner->setEqualizePaths(false); // Return different-length paths
                 planner->setUseUnboundedTime(false);
                 planner->setSpaceTimeUpperBound(strrt_time_ub);
-                planner->setSimplifyAfterPlan(false);
-                planner->setStrrtRewiring(StrrtRewiring::KNearest);
-                planner->setReturnFirstSolution(true);
+                planner->setSimplifyAfterPlan(
+                    simplify_conflict_solutions_);
+                planner->setPathSimplificationOptions(
+                    conflict_simplification_options_.value_or(
+                        simplification_options_));
+                planner->setStrrtRewiring(
+                    local_prioritized_strrt_rewiring_);
+                planner->setReturnFirstSolution(
+                    local_prioritized_strrt_return_first_solution_);
                 planner->setStrrtMaxIterations(
                     local_prioritized_strrt_max_iterations_);
                 planner->setCancellationCallback(cancel_requested);
@@ -1157,8 +1219,13 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
                         conflict_simplification_options_.value_or(
                             simplification_options_);
                     if (global_makespan_bound_timesteps_) {
+                        const auto composite_seed =
+                            arcRepairCompositePlanningSeed(
+                                current_event.attempt_root_planning_seed);
+                        current_event.composite_planning_seed = composite_seed;
                         aorrtc::SolveOptions options;
                         options.use_makespan_metric = true;
+                        options.planning_seed = composite_seed;
                         options.simplify_solution = simplify_conflict_solutions_;
                         options.simplification_options =
                             conflict_simplification_options;
@@ -1470,7 +1537,9 @@ ARC::RepairOutcome ARC::resolveConflictOnPaths(
     int sub_window_end_t = 0;
     std::vector<Path> local_patch_paths;
     auto *local_patch_paths_out =
-        apply_solution_to_paths ? nullptr : &local_patch_paths;
+        (!apply_solution_to_paths || visualization_trace_enabled_)
+            ? &local_patch_paths
+            : nullptr;
     outcome.resolved =
         solveSubproblemOnPaths(conflict, solve_start, global_time_limit,
                                working_paths,
@@ -1495,6 +1564,12 @@ ARC::ArcPlannerStatsSummary ARC::currentArcPlannerStatsSummary() const {
     summary.local_solver_mode = local_solver_mode_;
     summary.local_prioritized_strrt_max_iterations =
         local_prioritized_strrt_max_iterations_;
+    summary.local_prioritized_strrt_return_first_solution =
+        local_prioritized_strrt_return_first_solution_;
+    summary.local_prioritized_strrt_rewiring =
+        local_prioritized_strrt_rewiring_;
+    summary.local_prioritized_strrt_persist_at_goal =
+        local_prioritized_strrt_persist_at_goal_;
     summary.local_composite_rrt_use_makespan_metric =
         local_composite_rrt_use_makespan_metric_;
     summary.bounded_local_repair_epsilon_timesteps =
@@ -1535,6 +1610,12 @@ nlohmann::json ARC::plannerStatsJsonFromSummary(
     stats["local_solver_mode"] = arcLocalSolverModeStr(summary.local_solver_mode);
     stats["local_prioritized_strrt_max_iterations"] =
         summary.local_prioritized_strrt_max_iterations;
+    stats["local_prioritized_strrt_return_first_solution"] =
+        summary.local_prioritized_strrt_return_first_solution;
+    stats["local_prioritized_strrt_rewiring"] =
+        strrtRewiringStr(summary.local_prioritized_strrt_rewiring);
+    stats["local_prioritized_strrt_persist_at_goal"] =
+        summary.local_prioritized_strrt_persist_at_goal;
     stats["local_composite_rrt_use_makespan_metric"] =
         summary.local_composite_rrt_use_makespan_metric;
     stats["bounded_local_repair_epsilon_timesteps"] =
@@ -2160,6 +2241,8 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
         double elapsed_s = std::chrono::duration<double>(elapsed).count();
         if (elapsed_s >= timeLimit) break;
 
+        startVisualizationIteration(solution_paths_);
+
         // Scan the current timestep-synchronized global paths directly.
         CompositePathValidationOptions options = conflictScanOptions();
         options.stop_requested = [&]() {
@@ -2184,6 +2267,7 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
                 return expandConflictForSubproblem(conflict);
             },
             nullptr, &next_t_begin_by_pair);
+        setVisualizationConflicts(conflicts);
         applyConflictScanProgress(next_t_begin_by_pair);
         const double conflict_detection_wall_seconds =
             std::chrono::duration<double>(Clock::now() -
@@ -2247,6 +2331,11 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
             finalizePlannerStats();
             return ompl::base::PlannerStatus::TIMEOUT;
         }
+
+        appendVisualizationRepair(0, outcome.final_involved_robots,
+                                  outcome.window_start_t,
+                                  outcome.window_end_t,
+                                  outcome.local_patch_paths);
 
         resetConflictScanStartsForRobots(outcome.final_involved_robots,
                                          outcome.window_start_t);

@@ -26,6 +26,7 @@ struct SolutionEvent {
 struct SolveOptions {
     bool use_makespan_metric = true;
     bool simplify_solution = true;
+    std::optional<std::uint32_t> planning_seed;
     std::optional<std::uint64_t> cost_bound_timesteps;
     std::optional<std::size_t> max_internal_samples;
     std::optional<std::size_t> max_internal_vertices;

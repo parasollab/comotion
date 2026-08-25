@@ -578,16 +578,20 @@ void validateSelectedPlannerOptions(const Options &options,
             (void)parseArcExpansionMultipliers(
                 *options.arc_initial_valid_expansion_multipliers);
         }
-        if (options.arc_cspace_bound_margin < 0.0)
+        if (!std::isfinite(options.arc_cspace_bound_margin) ||
+            options.arc_cspace_bound_margin < 0.0)
             throw std::runtime_error(
                 "--arc-cspace-bound-margin must be non-negative");
-        if (options.arc_min_cspace_bound_range < 0.0)
+        if (!std::isfinite(options.arc_min_cspace_bound_range) ||
+            options.arc_min_cspace_bound_range < 0.0)
             throw std::runtime_error(
                 "--arc-min-cspace-bound-range must be non-negative");
         if (options.arc_local_composite_range < 0.0)
             throw std::runtime_error(
                 "--arc-local-composite-range must be non-negative");
         (void)parseArcLocalSolverMode(options.arc_local_solvers);
+        (void)parseStrrtRewiring(
+            options.arc_local_prioritized_rewiring);
     }
 
     if (options.or_parallel_worker_processes == 0)
@@ -665,6 +669,109 @@ inline void writeJson(const json &doc, const std::filesystem::path &path,
         ofs << doc.dump(indent) << "\n";
     else
         ofs << doc.dump() << "\n";
+}
+
+inline bool arcHistoryRequested(bool output_paths, bool track_arc_history) {
+    return output_paths && track_arc_history;
+}
+
+inline void enableArcHistoryTracking(
+    const std::shared_ptr<comotion::MultiRobotPlanner> &planner,
+    bool output_paths, bool track_arc_history) {
+    if (const auto arc = std::dynamic_pointer_cast<comotion::ARC>(planner)) {
+        arc->setVisualizationTraceEnabled(
+            arcHistoryRequested(output_paths, track_arc_history));
+    }
+}
+
+inline const std::vector<comotion::Path> *arcHistoryArtifactPaths(
+    const std::shared_ptr<comotion::MultiRobotPlanner> &planner,
+    bool output_paths, bool track_arc_history) {
+    if (!arcHistoryRequested(output_paths, track_arc_history))
+        return nullptr;
+    const auto arc = std::dynamic_pointer_cast<comotion::ARC>(planner);
+    if (!arc || arc->visualizationTrace().empty())
+        return nullptr;
+    return &arc->visualizationTrace().back().paths;
+}
+
+inline json pathConfigsJson(const comotion::Path &path) {
+    json configs = json::array();
+    for (const auto &config : path)
+        configs.push_back(config);
+    return configs;
+}
+
+inline void appendArcVisualization(
+    json &result,
+    const std::shared_ptr<comotion::MultiRobotPlanner> &planner,
+    bool output_paths, bool track_arc_history) {
+    if (!arcHistoryRequested(output_paths, track_arc_history))
+        return;
+    const auto arc = std::dynamic_pointer_cast<comotion::ARC>(planner);
+    if (!arc || arc->visualizationTrace().empty())
+        return;
+
+    json trace = {
+        {"schema_version", "1.0"},
+        {"planner", arc->name()},
+        {"iterations", json::array()},
+    };
+    if (const auto parallel_arc =
+            std::dynamic_pointer_cast<comotion::ParallelARC>(planner)) {
+        trace["workers"] = std::max(1u, parallel_arc->workerProcesses());
+    } else {
+        trace["workers"] = 1;
+    }
+
+    for (const auto &iteration : arc->visualizationTrace()) {
+        json iteration_json = {
+            {"paths", json::array()},
+            {"timesteps", 0},
+            {"conflict_scan_completed", iteration.conflict_scan_completed},
+            {"conflicts", json::array()},
+            {"repairs", json::array()},
+        };
+        std::size_t timesteps = 0;
+        for (const auto &path : iteration.paths) {
+            iteration_json["paths"].push_back(pathConfigsJson(path));
+            timesteps = std::max(timesteps, path.size());
+        }
+        iteration_json["timesteps"] = timesteps;
+
+        for (const auto &conflict : iteration.conflicts) {
+            iteration_json["conflicts"].push_back({
+                {"robot_i", conflict.seed_robot_i},
+                {"robot_j", conflict.seed_robot_j},
+                {"robots", conflict.robots},
+                {"timestep", conflict.conflict_timestep},
+                {"alpha", conflict.alpha},
+                {"kind", "vertex"},
+                {"window_start_t", conflict.window_begin_t},
+                {"window_end_t", conflict.window_end_t},
+            });
+        }
+
+        for (const auto &repair : iteration.repairs) {
+            json repair_json = {
+                {"conflict_index", repair.conflict_index},
+                {"robots", repair.robots},
+                {"window_start_t", repair.window_start_t},
+                {"window_end_t", repair.window_end_t},
+                {"paths", json::array()},
+            };
+            for (const auto &path : repair.local_paths)
+                repair_json["paths"].push_back(pathConfigsJson(path));
+            iteration_json["repairs"].push_back(std::move(repair_json));
+        }
+
+        trace["iterations"].push_back(std::move(iteration_json));
+    }
+
+    const auto &last = arc->visualizationTrace().back();
+    trace["solution_found"] =
+        last.conflict_scan_completed && last.conflicts.empty();
+    result["arc_visualization"] = std::move(trace);
 }
 
 inline std::string requireValue(int &index, int argc, char **argv,
@@ -914,6 +1021,12 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
                 parseArcLocalSolverMode(options.arc_local_solvers));
             planner->setLocalPrioritizedStrrtMaxIterations(
                 options.arc_local_prioritized_max_iterations);
+            planner->setLocalPrioritizedStrrtReturnFirstSolution(
+                options.arc_local_prioritized_return_first_solution);
+            planner->setLocalPrioritizedStrrtRewiring(parseStrrtRewiring(
+                options.arc_local_prioritized_rewiring));
+            planner->setLocalPrioritizedStrrtPersistAtGoal(
+                options.arc_local_prioritized_persist_at_goal);
             planner->setBoundedLocalRepairEpsilonTimesteps(
                 options.ao_arc_local_bound_epsilon_timesteps);
             planner->setSimplifyInitialSolutions(
@@ -1019,6 +1132,12 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
                 parseArcLocalSolverMode(options.arc_local_solvers));
             planner->setLocalPrioritizedStrrtMaxIterations(
                 options.arc_local_prioritized_max_iterations);
+            planner->setLocalPrioritizedStrrtReturnFirstSolution(
+                options.arc_local_prioritized_return_first_solution);
+            planner->setLocalPrioritizedStrrtRewiring(parseStrrtRewiring(
+                options.arc_local_prioritized_rewiring));
+            planner->setLocalPrioritizedStrrtPersistAtGoal(
+                options.arc_local_prioritized_persist_at_goal);
             planner->setSimplifyInitialSolutions(
                 options.arc_simplify_initial_solutions);
             planner->setSimplifyConflictSolutions(
@@ -1083,6 +1202,12 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
                 parseArcLocalSolverMode(options.arc_local_solvers));
             planner->setLocalPrioritizedStrrtMaxIterations(
                 options.arc_local_prioritized_max_iterations);
+            planner->setLocalPrioritizedStrrtReturnFirstSolution(
+                options.arc_local_prioritized_return_first_solution);
+            planner->setLocalPrioritizedStrrtRewiring(parseStrrtRewiring(
+                options.arc_local_prioritized_rewiring));
+            planner->setLocalPrioritizedStrrtPersistAtGoal(
+                options.arc_local_prioritized_persist_at_goal);
             planner->setSimplifyInitialSolutions(
                 options.arc_simplify_initial_solutions);
             planner->setSimplifyConflictSolutions(

@@ -42,6 +42,7 @@ struct Options {
     double arc_min_cspace_bound_range = 0.0;
     double arc_local_composite_range = 0.0;
     std::string arc_local_solvers = "composite";
+    std::string arc_local_prioritized_rewiring = "knearest";
 
     unsigned int or_parallel_worker_processes = 1;
     unsigned int parallel_arc_worker_processes = 0;
@@ -83,6 +84,25 @@ bool expectThrow(const std::string &label,
 
 int main() {
     bool ok = true;
+
+    ok &= !common::arcHistoryRequested(false, false);
+    ok &= !common::arcHistoryRequested(true, false);
+    ok &= !common::arcHistoryRequested(false, true);
+    ok &= common::arcHistoryRequested(true, true);
+
+    auto arc = std::make_shared<comotion::ARC>();
+    common::enableArcHistoryTracking(arc, true, false);
+    ok &= !arc->visualizationTraceEnabled();
+    common::enableArcHistoryTracking(arc, false, true);
+    ok &= !arc->visualizationTraceEnabled();
+    common::enableArcHistoryTracking(arc, true, true);
+    ok &= arc->visualizationTraceEnabled();
+
+    nlohmann::json artifact = nlohmann::json::object();
+    common::appendArcVisualization(artifact, arc, true, false);
+    ok &= !artifact.contains("arc_visualization");
+    common::appendArcVisualization(artifact, arc, false, true);
+    ok &= !artifact.contains("arc_visualization");
 
     Options options;
     ok &= expectNoThrow("ARC with unrelated invalid options", [&]() {

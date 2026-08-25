@@ -1379,6 +1379,12 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
     planner_stats_summary.local_solver_mode = local_solver_mode_;
     planner_stats_summary.local_prioritized_strrt_max_iterations =
         local_prioritized_strrt_max_iterations_;
+    planner_stats_summary.local_prioritized_strrt_return_first_solution =
+        local_prioritized_strrt_return_first_solution_;
+    planner_stats_summary.local_prioritized_strrt_rewiring =
+        local_prioritized_strrt_rewiring_;
+    planner_stats_summary.local_prioritized_strrt_persist_at_goal =
+        local_prioritized_strrt_persist_at_goal_;
     planner_stats_summary.local_composite_rrt_use_makespan_metric =
         local_composite_rrt_use_makespan_metric_;
     planner_stats_summary.bounded_local_repair_epsilon_timesteps =
@@ -1437,6 +1443,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
         if (elapsed_s >= timeLimit)
             break;
 
+        startVisualizationIteration(solution_paths_);
+
         switch (parallel_strategy_) {
         case ParallelArcParallelStrategy::Synchronous:
             break;
@@ -1476,6 +1484,7 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                 return expandConflictForSubproblem(conflict);
             },
             nullptr, &next_t_begin_by_pair);
+        setVisualizationConflicts(conflicts);
         const double conflict_detection_wall_seconds =
             std::chrono::duration<double>(Clock::now() -
                                           conflict_detection_start)
@@ -1568,6 +1577,7 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             };
 
         auto applyResult = [&](const WorkerResult &result,
+                               const SubproblemConflict &assigned_conflict,
                                std::set<int> &patched_robots) {
             if (result.final_involved_robots.size() != result.patches.size())
                 return ApplyResult::Error;
@@ -1613,6 +1623,29 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
             }
             recordAppliedRepairHistory(patch_robots, result.window_start_t,
                                        result.window_end_t);
+            std::vector<Path> visualization_local_paths;
+            visualization_local_paths.reserve(result.patches.size());
+            for (const auto &patch : result.patches)
+                visualization_local_paths.push_back(patch.local_path);
+            const auto conflict_it = std::find_if(
+                conflicts.begin(), conflicts.end(),
+                [&](const SubproblemConflict &conflict) {
+                    return conflict.seed_robot_i ==
+                               assigned_conflict.seed_robot_i &&
+                           conflict.seed_robot_j ==
+                               assigned_conflict.seed_robot_j &&
+                           conflict.conflict_timestep ==
+                               assigned_conflict.conflict_timestep;
+                });
+            const std::size_t conflict_index =
+                conflict_it == conflicts.end()
+                    ? 0
+                    : static_cast<std::size_t>(
+                          std::distance(conflicts.begin(), conflict_it));
+            appendVisualizationRepair(conflict_index, patch_robots,
+                                      result.window_start_t,
+                                      result.window_end_t,
+                                      visualization_local_paths);
             return ApplyResult::Applied;
         };
 
@@ -1672,7 +1705,7 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                 appendOutcomePatches(task, outcome, result);
 
                 const auto apply_status =
-                    applyResult(result, patched_robots);
+                    applyResult(result, task.conflict, patched_robots);
                 if (apply_status == ApplyResult::Error) {
                     planner_stats_summary
                         .conflict_resolution_times_seconds_wall_clock +=
@@ -2312,7 +2345,8 @@ ompl::base::PlannerStatus ParallelARC::solve(double timeLimit) {
                     static_cast<std::uint64_t>(patch.local_path.arrival_timestep()));
             }
             const auto apply_status =
-                applyResult(attempt.result, patched_robots);
+                applyResult(attempt.result, attempt.assigned_conflict,
+                            patched_robots);
             if (apply_status == ApplyResult::Error) {
                 attempt.exit_failed = true;
                 batch_failed = true;
@@ -2724,6 +2758,12 @@ bool ParallelARC::runConflictDetectionAblation(double timeLimit) {
     planner_stats_summary.local_solver_mode = local_solver_mode_;
     planner_stats_summary.local_prioritized_strrt_max_iterations =
         local_prioritized_strrt_max_iterations_;
+    planner_stats_summary.local_prioritized_strrt_return_first_solution =
+        local_prioritized_strrt_return_first_solution_;
+    planner_stats_summary.local_prioritized_strrt_rewiring =
+        local_prioritized_strrt_rewiring_;
+    planner_stats_summary.local_prioritized_strrt_persist_at_goal =
+        local_prioritized_strrt_persist_at_goal_;
     planner_stats_summary.local_composite_rrt_use_makespan_metric =
         local_composite_rrt_use_makespan_metric_;
     planner_stats_summary.bounded_local_repair_epsilon_timesteps =

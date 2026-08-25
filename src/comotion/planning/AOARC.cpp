@@ -38,6 +38,12 @@ void AOARC::configureArcAttempt(ARC &planner) const {
     planner.setLocalSolverMode(local_solver_mode_);
     planner.setLocalPrioritizedStrrtMaxIterations(
         local_prioritized_strrt_max_iterations_);
+    planner.setLocalPrioritizedStrrtReturnFirstSolution(
+        local_prioritized_strrt_return_first_solution_);
+    planner.setLocalPrioritizedStrrtRewiring(
+        local_prioritized_strrt_rewiring_);
+    planner.setLocalPrioritizedStrrtPersistAtGoal(
+        local_prioritized_strrt_persist_at_goal_);
     planner.setBoundedLocalRepairEpsilonTimesteps(
         bounded_local_repair_epsilon_timesteps_);
     planner.setUseCspaceBounds(use_cspace_bounds_);
@@ -51,6 +57,7 @@ void AOARC::configureArcAttempt(ARC &planner) const {
     }
     planner.setSimplifyInitialSolutions(simplify_initial_solutions_);
     planner.setSimplifyConflictSolutions(simplify_conflict_solutions_);
+    planner.setVisualizationTraceEnabled(visualization_trace_enabled_);
     planner.setPlanningSeed(planning_seed_);
     planner.setCancellationCallback(cancel_requested_);
     planner.setProblem(problem_);
@@ -67,6 +74,7 @@ ompl::base::PlannerStatus AOARC::solve(double timeLimit) {
     configureArcAttempt(first);
     first.clearGlobalMakespanBoundTimesteps();
     const auto first_status = first.solve(timeLimit);
+    replaceVisualizationTrace(first.visualizationTrace());
     const double first_elapsed =
         std::chrono::duration<double>(Clock::now() - start).count();
     if (first_status != ompl::base::PlannerStatus::EXACT_SOLUTION) {
@@ -126,6 +134,7 @@ ompl::base::PlannerStatus AOARC::solve(double timeLimit) {
                 best_makespan = candidate_makespan;
                 best_sum = candidate_sum;
                 best_paths = attempt.getSolutionPaths();
+                replaceVisualizationTrace(attempt.visualizationTrace());
                 ++num_improvements;
                 events.push_back(
                     {std::chrono::duration<double>(Clock::now() - start)

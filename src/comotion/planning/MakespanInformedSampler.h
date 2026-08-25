@@ -12,9 +12,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <vector>
 
 namespace comotion {
@@ -23,10 +25,14 @@ namespace aorrtc {
 class MakespanDirectInfSampler final : public ompl::base::InformedSampler {
 public:
     MakespanDirectInfSampler(const ompl::base::ProblemDefinitionPtr &probDefn,
-                             unsigned int maxNumberCalls)
+                             unsigned int maxNumberCalls,
+                             std::optional<std::uint_fast32_t> local_seed =
+                                 std::nullopt)
         : ompl::base::InformedSampler(probDefn, maxNumberCalls),
           fallback_(std::make_shared<ompl::base::RejectionInfSampler>(
               probDefn, maxNumberCalls)) {
+        if (local_seed)
+            rng_.setLocalSeed(*local_seed);
         const auto *makespan_space =
             dynamic_cast<const MakespanCompositeStateSpace *>(space_.get());
         const auto *real_space =
@@ -279,17 +285,22 @@ class MakespanPathLengthObjective final
     : public ompl::base::PathLengthOptimizationObjective {
 public:
     explicit MakespanPathLengthObjective(
-        const ompl::base::SpaceInformationPtr &si)
-        : ompl::base::PathLengthOptimizationObjective(si) {
+        const ompl::base::SpaceInformationPtr &si,
+        std::optional<std::uint_fast32_t> sampler_seed = std::nullopt)
+        : ompl::base::PathLengthOptimizationObjective(si),
+          sampler_seed_(sampler_seed) {
         description_ = "Path Length (makespan direct informed sampling)";
     }
 
     ompl::base::InformedSamplerPtr allocInformedStateSampler(
         const ompl::base::ProblemDefinitionPtr &probDefn,
         unsigned int maxNumberCalls) const override {
-        return std::make_shared<MakespanDirectInfSampler>(probDefn,
-                                                          maxNumberCalls);
+        return std::make_shared<MakespanDirectInfSampler>(
+            probDefn, maxNumberCalls, sampler_seed_);
     }
+
+private:
+    std::optional<std::uint_fast32_t> sampler_seed_;
 };
 
 } // namespace aorrtc

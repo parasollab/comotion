@@ -167,7 +167,9 @@ contract and case catalog.
 
 The optional browser viewer can load path-result JSON files produced by direct
 app runs with `--output-paths` or `--output-endpoint-paths`. See
-[viewer/README.md](viewer/README.md).
+[viewer/README.md](viewer/README.md). ARC-family runs can also replay conflict
+detection and repair history when both `--output-paths` and
+`--track-arc-history` are supplied.
 
 ## Citation
 

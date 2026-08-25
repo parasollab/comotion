@@ -3,6 +3,7 @@
 #include "comotion/collision/ConflictChecker.h"
 #include "comotion/planning/MultiRobotPlanner.h"
 #include "comotion/planning/PathSimplification.h"
+#include "comotion/planning/PrioritizedSTRRT.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -37,9 +38,40 @@ public:
     };
     using CancellationCallback = std::function<bool()>;
 
+    struct VisualizationRepair {
+        std::size_t conflict_index = 0;
+        std::vector<int> robots;
+        int window_start_t = 0;
+        int window_end_t = 0;
+        std::vector<Path> local_paths;
+    };
+
+    struct VisualizationIteration {
+        std::vector<Path> paths;
+        bool conflict_scan_completed = false;
+        std::vector<SubproblemConflict> conflicts;
+        std::vector<VisualizationRepair> repairs;
+    };
+
     ompl::base::PlannerStatus solve(double timeLimit) override;
     std::vector<Path> getSolutionPaths() const override;
     std::string name() const override { return "ARC"; }
+
+    /// Retain intermediate path sets, conflict batches, and applied repairs for
+    /// ARC process artifacts. Disabled by default because histories can be
+    /// large. Applications additionally gate capture and serialization on
+    /// --output-paths together with --track-arc-history.
+    void setVisualizationTraceEnabled(bool enabled) {
+        visualization_trace_enabled_ = enabled;
+        if (!enabled)
+            visualization_trace_.clear();
+    }
+    bool visualizationTraceEnabled() const {
+        return visualization_trace_enabled_;
+    }
+    const std::vector<VisualizationIteration> &visualizationTrace() const {
+        return visualization_trace_;
+    }
 
     void setInitialWindow(int w) { initial_window_ = std::max(1, w); }
     void setExpansionStep(double e) {
@@ -153,6 +185,24 @@ public:
     unsigned int localPrioritizedStrrtMaxIterations() const {
         return local_prioritized_strrt_max_iterations_;
     }
+    void setLocalPrioritizedStrrtReturnFirstSolution(bool enabled) {
+        local_prioritized_strrt_return_first_solution_ = enabled;
+    }
+    bool localPrioritizedStrrtReturnFirstSolution() const {
+        return local_prioritized_strrt_return_first_solution_;
+    }
+    void setLocalPrioritizedStrrtRewiring(StrrtRewiring mode) {
+        local_prioritized_strrt_rewiring_ = mode;
+    }
+    StrrtRewiring localPrioritizedStrrtRewiring() const {
+        return local_prioritized_strrt_rewiring_;
+    }
+    void setLocalPrioritizedStrrtPersistAtGoal(bool enabled) {
+        local_prioritized_strrt_persist_at_goal_ = enabled;
+    }
+    bool localPrioritizedStrrtPersistAtGoal() const {
+        return local_prioritized_strrt_persist_at_goal_;
+    }
     void setUseCspaceBounds(bool v) { use_cspace_bounds_ = v; }
     void setCspaceBoundMargin(float m) { cspace_bound_margin_ = m; }
     /// Minimum per-joint bound width for subproblem C-space boxes (stationary robots).
@@ -230,6 +280,10 @@ protected:
     struct ArcPlannerStatsSummary {
         LocalSolverMode local_solver_mode = LocalSolverMode::Both;
         unsigned int local_prioritized_strrt_max_iterations = 0;
+        bool local_prioritized_strrt_return_first_solution = true;
+        StrrtRewiring local_prioritized_strrt_rewiring =
+            StrrtRewiring::KNearest;
+        bool local_prioritized_strrt_persist_at_goal = false;
         bool local_composite_rrt_use_makespan_metric = false;
         std::uint64_t bounded_local_repair_epsilon_timesteps = 1;
         std::uint64_t num_conflicts = 0;
@@ -255,6 +309,19 @@ protected:
     };
 
     using Clock = std::chrono::steady_clock;
+
+    void startVisualizationIteration(const std::vector<Path> &paths);
+    void setVisualizationConflicts(
+        const std::vector<SubproblemConflict> &conflicts);
+    void appendVisualizationRepair(std::size_t conflict_index,
+                                   const std::vector<int> &robots,
+                                   int window_start_t, int window_end_t,
+                                   const std::vector<Path> &local_paths);
+    void replaceVisualizationTrace(
+        const std::vector<VisualizationIteration> &trace) {
+        if (visualization_trace_enabled_)
+            visualization_trace_ = trace;
+    }
 
     struct RepairWindow {
         int window_start_t = 0;
@@ -518,6 +585,10 @@ protected:
     bool local_composite_rrt_use_makespan_metric_{false};
     LocalSolverMode local_solver_mode_ = LocalSolverMode::Both;
     unsigned int local_prioritized_strrt_max_iterations_ = 5;
+    bool local_prioritized_strrt_return_first_solution_ = true;
+    StrrtRewiring local_prioritized_strrt_rewiring_ =
+        StrrtRewiring::KNearest;
+    bool local_prioritized_strrt_persist_at_goal_ = false;
     bool use_cspace_bounds_ = true;
     float cspace_bound_margin_ = 0.5f;
     double min_cspace_bound_range_ = 0.1;
@@ -557,6 +628,8 @@ protected:
     std::vector<double> conflict_find_critical_worker_total_wall_seconds_;
     std::vector<double> conflict_resolution_times_seconds_;
     std::vector<double> conflict_resolution_times_cpu_seconds_;
+    bool visualization_trace_enabled_ = false;
+    std::vector<VisualizationIteration> visualization_trace_;
 };
 
 using ArcLocalSolverMode = ARC::LocalSolverMode;

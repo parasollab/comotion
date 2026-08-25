@@ -706,6 +706,10 @@ bool testArcSolutionMetricsMatchReturnedRaggedPaths() {
     comotion::ARC planner;
     planner.setProblem(problem);
     planner.setPlanningSeed(11);
+    planner.setVisualizationTraceEnabled(true);
+    planner.setLocalPrioritizedStrrtReturnFirstSolution(false);
+    planner.setLocalPrioritizedStrrtRewiring(comotion::StrrtRewiring::Radius);
+    planner.setLocalPrioritizedStrrtPersistAtGoal(true);
     planner.setInitialWindow(16);
     planner.setExpansionStep(16);
     comotion::PathSimplificationOptions simplification_options;
@@ -731,6 +735,14 @@ bool testArcSolutionMetricsMatchReturnedRaggedPaths() {
         return false;
 
     const auto paths = planner.getSolutionPaths();
+    if (!expectTrue(
+            "ARC visualization trace captures a conflict-free iteration",
+            planner.visualizationTrace().size() == 1 &&
+                planner.visualizationTrace().front().conflict_scan_completed &&
+                planner.visualizationTrace().front().conflicts.empty() &&
+                planner.visualizationTrace().front().paths.size() ==
+                    problem->numRobots()))
+        return false;
     std::uint64_t returned_sum = 0;
     std::uint64_t returned_makespan = 0;
     for (const auto &path : paths) {
@@ -792,6 +804,15 @@ bool testArcSolutionMetricsMatchReturnedRaggedPaths() {
         return false;
     if (!expectTrue("ARC initial window reported",
                     planner_stats["initial_window"].get<int>() == 16))
+        return false;
+    if (!expectTrue(
+            "ARC local PrioritizedSTRRT controls are reported",
+            !planner_stats["local_prioritized_strrt_return_first_solution"]
+                 .get<bool>() &&
+                planner_stats["local_prioritized_strrt_rewiring"]
+                        .get<std::string>() == "radius" &&
+                planner_stats["local_prioritized_strrt_persist_at_goal"]
+                    .get<bool>()))
         return false;
     if (!expectTrue("ARC expansion step reported",
                     planner_stats["expansion_step"].get<int>() == 16))

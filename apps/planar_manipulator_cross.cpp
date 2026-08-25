@@ -55,6 +55,7 @@ struct AppOptions {
     std::size_t resolution = 128;
     std::string output_dir = "benchmarks/results/planar_manipulator_cross";
     bool output_paths = false;
+    bool track_arc_history = false;
     bool output_endpoint_paths = false;
     bool reverse_adaptive_endpoints = false;
     std::optional<std::string> metrics_json_path;
@@ -104,6 +105,9 @@ struct AppOptions {
     bool arc_simplify_conflict_solutions = true;
     std::string arc_local_solvers = "composite";
     unsigned int arc_local_prioritized_max_iterations = 5;
+    bool arc_local_prioritized_return_first_solution = true;
+    std::string arc_local_prioritized_rewiring = "knearest";
+    bool arc_local_prioritized_persist_at_goal = false;
     std::uint64_t ao_arc_local_bound_epsilon_timesteps = 1;
     unsigned int or_parallel_worker_processes = 1;
     unsigned int parallel_arc_worker_processes = 2;
@@ -352,7 +356,10 @@ void writePathArtifacts(const TrialMetrics &metrics,
                         const std::string &basename,
                         const std::string &visual_urdf,
                         const std::string &collision_urdf,
-                        const std::string &srdf) {
+                        const std::string &srdf,
+                        const std::shared_ptr<comotion::MultiRobotPlanner> &planner = {},
+                        bool output_paths = false,
+                        bool track_arc_history = false) {
     std::filesystem::create_directories(output_dir);
 
     auto robot_models = problem->robotModelPtrs();
@@ -437,6 +444,8 @@ void writePathArtifacts(const TrialMetrics &metrics,
 
     out["timesteps"] = timesteps;
     out["total_path_cost"] = total_path_cost;
+    common::appendArcVisualization(out, planner, output_paths,
+                                   track_arc_history);
 
     writeJson(out, output_dir / (basename + "_" + metrics.planner + "_result.json"),
               2);
@@ -453,6 +462,8 @@ TrialMetrics runPlanner(
     comotion::seedOmplGlobalFromUserPlanningSeed(options.seed);
     planner->setPlanningSeed(options.seed);
     planner->setProblem(problem);
+    common::enableArcHistoryTracking(
+        planner, options.output_paths, options.track_arc_history);
 
     if (g_app_verbose)
         std::cout << "Running " << planner_name << "\n";
@@ -498,13 +509,19 @@ TrialMetrics runPlanner(
     }
 
     if (options.output_paths) {
-        if (metrics.success) {
+        const auto *history_paths = common::arcHistoryArtifactPaths(
+            planner, options.output_paths, options.track_arc_history);
+        if (metrics.success || history_paths) {
+            const auto artifact_paths =
+                metrics.success ? planner->getSolutionPaths() : *history_paths;
             writePathArtifacts(metrics, generated, problem,
-                               planner->getSolutionPaths(),
+                               artifact_paths,
                                options.output_dir, basename, visual_urdf,
-                               collision_urdf, srdf);
+                               collision_urdf, srdf, planner,
+                               options.output_paths,
+                               options.track_arc_history);
         } else if (g_app_verbose) {
-            std::cout << "No exact solution; skipping path artifacts\n";
+            std::cout << "No complete path set; skipping path artifacts\n";
         }
     }
 
@@ -604,6 +621,7 @@ void printUsage(const char *prog) {
         << "  --resolution <n>        Timesteps per second (default: 128)\n"
         << "  --metrics-json <path>   Write compact trial metrics JSON\n"
         << "  --output-paths          Write visualization result JSON and .pth files\n"
+        << "  --track-arc-history     With --output-paths, embed ARC process history\n"
         << "  --output-endpoint-paths Write fake two-state start/goal paths and exit\n"
         << "  --reverse-adaptive-endpoints\n"
         << "                         Restore the original adaptive start/goal direction\n"
@@ -654,6 +672,9 @@ void printUsage(const char *prog) {
         << "  --aorrtc-max-internal-vertices <n>\n"
         << "  --arc-local-solvers <both|prioritized|composite> (default: composite)\n"
         << "  --arc-local-prioritized-max-iterations <n> (default: 5; 0 disables cap)\n"
+        << "  --arc-local-prioritized-return-first-solution <0|1> (default: 1)\n"
+        << "  --arc-local-prioritized-rewiring <off|radius|knearest> (default: knearest)\n"
+        << "  --arc-local-prioritized-persist-at-goal / --no-arc-local-prioritized-persist-at-goal\n"
         << "  --ao-arc-local-bound-epsilon-timesteps <n> (default: 1; 0 disables)\n"
         << "  --cooperative-rrt-worker-threads <n>\n"
         << "  --or-parallel-worker-processes <n>\n"
@@ -708,6 +729,8 @@ AppOptions parseArgs(int argc, char **argv) {
             options.metrics_json_path = requireValue(i, argc, argv, arg);
         } else if (arg == "--output-paths") {
             options.output_paths = true;
+        } else if (arg == "--track-arc-history") {
+            options.track_arc_history = true;
         } else if (arg == "--output-endpoint-paths" ||
                    arg == "--output-fake-paths") {
             options.output_endpoint_paths = true;
@@ -863,6 +886,16 @@ AppOptions parseArgs(int argc, char **argv) {
             options.arc_local_prioritized_max_iterations =
                 static_cast<unsigned int>(
                     std::stoul(requireValue(i, argc, argv, arg)));
+        } else if (arg == "--arc-local-prioritized-return-first-solution") {
+            options.arc_local_prioritized_return_first_solution =
+                common::parseBoolValue(requireValue(i, argc, argv, arg));
+        } else if (arg == "--arc-local-prioritized-rewiring") {
+            options.arc_local_prioritized_rewiring =
+                requireValue(i, argc, argv, arg);
+        } else if (arg == "--arc-local-prioritized-persist-at-goal") {
+            options.arc_local_prioritized_persist_at_goal = true;
+        } else if (arg == "--no-arc-local-prioritized-persist-at-goal") {
+            options.arc_local_prioritized_persist_at_goal = false;
         } else if (arg == "--ao-arc-local-bound-epsilon-timesteps") {
             options.ao_arc_local_bound_epsilon_timesteps =
                 static_cast<std::uint64_t>(

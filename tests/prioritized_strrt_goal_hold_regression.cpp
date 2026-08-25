@@ -274,8 +274,14 @@ bool testPrioritizedStrrtSolutionMetricsUsePreEqualizationCosts() {
 
     comotion::PrioritizedSTRRT planner;
     planner.setProblem(problem);
+    planner.setPlanningSeed(2026);
     planner.setPriorityOrder({0, 1});
     planner.setSpaceTimeUpperBound(4.0);
+    comotion::PathSimplificationOptions simplification_options;
+    simplification_options.max_shortcut_steps = 3;
+    simplification_options.max_empty_steps = 2;
+    simplification_options.max_smooth_steps = 1;
+    planner.setPathSimplificationOptions(simplification_options);
 
     const auto status = planner.solve(10.0);
     if (status != ob::PlannerStatus::EXACT_SOLUTION) {
@@ -318,6 +324,24 @@ bool testPrioritizedStrrtSolutionMetricsUsePreEqualizationCosts() {
         return false;
     if (!expectEq("planner stats record one solve time per robot",
                   planner_stats["robot_solve_times_seconds"].size(), 2))
+        return false;
+    if (!expectTrue(
+            "planner stats record deterministic component seeds",
+            planner_stats["planning_seed"].get<std::uint32_t>() == 2026 &&
+                planner_stats["state_sampler_seeds"].size() == 2 &&
+                planner_stats["time_sampler_seeds"].size() == 2 &&
+                planner_stats["planner_local_seeds"].size() == 2 &&
+                planner_stats["conditional_sampler_seeds"].size() == 2 &&
+                planner_stats["simplifier_local_seeds"].size() == 2))
+        return false;
+    if (!expectTrue(
+            "planner stats record path simplification controls",
+            planner_stats["path_simplification"]["max_shortcut_steps"]
+                    .get<unsigned int>() == 3 &&
+                planner_stats["path_simplification"]["max_empty_steps"]
+                        .get<unsigned int>() == 2 &&
+                planner_stats["path_simplification"]["max_smooth_steps"]
+                        .get<unsigned int>() == 1))
         return false;
 
     return true;

@@ -280,6 +280,7 @@ bool testBoundedSingleRobotAOXRRTConnect() {
     auto problem = makeParallelSphereProblem();
 
     comotion::aorrtc::SolveOptions loose;
+    loose.planning_seed = 11;
     loose.cost_bound_timesteps = 32;
     loose.max_internal_samples = 2000;
     loose.max_internal_vertices = 2000;
@@ -290,6 +291,7 @@ bool testBoundedSingleRobotAOXRRTConnect() {
         return false;
 
     comotion::aorrtc::SolveOptions tight;
+    tight.planning_seed = 12;
     tight.cost_bound_timesteps = 2;
     tight.max_internal_samples = 200;
     tight.max_internal_vertices = 200;
@@ -304,6 +306,7 @@ bool testBoundedCompositeAOXRRTConnect() {
     auto problem = makeParallelSphereProblem();
 
     comotion::aorrtc::SolveOptions loose;
+    loose.planning_seed = 13;
     loose.cost_bound_timesteps = 32;
     loose.max_internal_samples = 3000;
     loose.max_internal_vertices = 3000;
@@ -317,6 +320,7 @@ bool testBoundedCompositeAOXRRTConnect() {
         return false;
 
     comotion::aorrtc::SolveOptions tight;
+    tight.planning_seed = 14;
     tight.cost_bound_timesteps = 2;
     tight.max_internal_samples = 200;
     tight.max_internal_vertices = 200;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "comotion/planning/MultiRobotPlanner.h"
+#include "comotion/planning/PathSimplification.h"
 #include <vector>
 
 namespace comotion {
@@ -49,6 +50,13 @@ public:
 
     // When true, run OMPL path simplification after each successful solve (default off).
     void setSimplifyAfterPlan(bool v) { simplify_after_plan_ = v; }
+    void setPathSimplificationOptions(PathSimplificationOptions options) {
+        simplification_options_ =
+            detail::normalizePathSimplificationOptions(options);
+    }
+    PathSimplificationOptions getPathSimplificationOptions() const {
+        return simplification_options_;
+    }
 
     // ST-RRT* rewiring during tree extension (default Off).
     void setStrrtRewiring(StrrtRewiring m) { strrt_rewiring_ = m; }
@@ -102,6 +110,7 @@ private:
     bool equalize_paths_ = true;
     bool return_first_solution_ = true;
     bool simplify_after_plan_ = false;
+    PathSimplificationOptions simplification_options_{};
     StrrtRewiring strrt_rewiring_ = StrrtRewiring::Off;
     bool use_unbounded_time_ = true;
     bool inflate_initial_batch_from_min_goal_time_ = true;

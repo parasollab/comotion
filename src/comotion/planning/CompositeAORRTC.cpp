@@ -14,6 +14,7 @@ ompl::base::PlannerStatus CompositeAORRTC::solve(double timeLimit) {
     aorrtc::SolveOptions options;
     options.use_makespan_metric = true;
     options.simplify_solution = simplify_solution_;
+    options.planning_seed = planning_seed_;
     if (max_internal_samples_ > 0)
         options.max_internal_samples = max_internal_samples_;
     if (max_internal_vertices_ > 0)

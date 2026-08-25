@@ -3,6 +3,7 @@
 #include <ompl/base/OptimizationObjective.h>
 #include <ompl/base/Goal.h>
 #include <ompl/base/spaces/RealVectorStateSpace.h>
+#include <ompl/base/spaces/TimeStateSpace.h>
 #include <ompl/geometric/PathSimplifier.h>
 #include <ompl/geometric/planners/rrt/RRTConnect.h>
 
@@ -26,6 +27,15 @@ public:
     SeededRealVectorStateSampler(const ompl::base::StateSpace *space,
                                  std::uint_fast32_t seed)
         : ompl::base::RealVectorStateSampler(space) {
+        rng_.setLocalSeed(seed);
+    }
+};
+
+class SeededTimeStateSampler : public ompl::base::TimeStateSampler {
+public:
+    SeededTimeStateSampler(const ompl::base::StateSpace *space,
+                           std::uint_fast32_t seed)
+        : ompl::base::TimeStateSampler(space) {
         rng_.setLocalSeed(seed);
     }
 };

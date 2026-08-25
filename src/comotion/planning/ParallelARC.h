@@ -26,6 +26,7 @@ public:
     std::string name() const override { return "ParallelARC"; }
 
     void setWorkerProcesses(unsigned n) { worker_processes_ = n; }
+    unsigned workerProcesses() const { return worker_processes_; }
     void setParallelizeInitialIndividualPlans(bool enabled) {
         parallelize_initial_individual_plans_ = enabled;
     }

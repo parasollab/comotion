@@ -6,6 +6,13 @@
 import * as THREE from "three";
 import { TrackballControls } from "three/examples/jsm/controls/TrackballControls.js";
 import { parseResult, configAt } from "./schema.js";
+import {
+  arcFrameDurationTimesteps,
+  buildArcTimeline,
+  configAtPath,
+  conflictRobots,
+  firstReachedConflict,
+} from "./arc-playback.js";
 import { createURDFLoader, loadURDFAsync } from "./urdf-loader.js?v=9";
 
 // Panda 7-DOF joint names (matches planner config order)
@@ -29,12 +36,26 @@ let showRobotCollisionGeometry = false;
 let showCrossSection2D = false;
 let resultData = null;
 let currentTimestep = 0;
+let playbackMode = "solution";
+let arcTimeline = [];
 let robotMeshes = [];
 let obstacleMeshes = [];
 let crossSection2DGroup = null;
 let isPlaying = false;
-let playIntervalId = null;
+let playTimerId = null;
+let playbackSpeedMultiplier = 1;
 const PLAY_FPS = 12;
+const ARC_PATH_COLOR = 0xaeb4bb;
+const ARC_CONFLICT_COLOR = 0xd62828;
+const ARC_SOLUTION_COLOR = 0x2f9e44;
+const ARC_GROUP_COLORS = [
+  0x1976d2,
+  0xf57c00,
+  0x7b1fa2,
+  0x00897b,
+  0xc2185b,
+  0x689f38,
+];
 const CROSS_SECTION_Z = 0;
 const CROSS_SECTION_EPS = 1e-6;
 const PLANAR3_LINK_LENGTH = 0.3;
@@ -49,30 +70,41 @@ function scaleRgbHex(hex, k) {
   return (r << 16) | (g << 8) | b;
 }
 
-/** Prior light gray, darkened 20% (RGB scale 0.8). */
-const OBSTACLE_COLOR = scaleRgbHex(0xd4d4d4, 0.8);
+/** Prior obstacle gray (0xaaaaaa), lightened by 40% per RGB channel. */
+const OBSTACLE_COLOR = scaleRgbHex(0xaaaaaa, 1.4);
+const OBSTACLE_OPACITY = 0.45;
 
 const ROBOT_COLOR_PALETTES = [
   {
     id: "neutral",
     label: "Neutral",
+    emissiveIntensity: 1.15,
+    receiveShadows: false,
     colors: [
-      0x2447b8, // royal blue
-      0xd4a017, // gold
-      0x6f2da8, // imperial purple
-      0x007a5e, // emerald
-      0xb00020, // ruby
-      0x007c89, // peacock
-      0x7a1e3a, // burgundy
-      0x0b3d91, // sapphire
-      0xa0006d, // royal magenta
-      0x145a32, // deep forest
-      0xb65a00, // burnished orange
-      0x3f2e8c, // indigo
-      0x9e2a2b, // garnet
-      0x008060, // jade
-      0x5c2751, // plum
-      0x4a5d8f, // steel blue
+      0x00ffff, // electric cyan
+      0xff00ff, // electric magenta
+      0xffff00, // electric yellow
+      0x39ff14, // laser green
+      0xff073a, // neon red
+      0x00ffcc, // aqua glow
+      0xff1493, // hot pink
+      0xccff00, // acid chartreuse
+      0xff5f1f, // blaze orange
+      0x00b7ff, // plasma blue
+      0xee00ff, // neon violet
+      0xaaff00, // toxic lime
+      0xffea00, // highlighter yellow
+      0x00ff66, // green glow
+      0xff0099, // punch pink
+      0x33ffff, // ice cyan
+      0xff3300, // hot vermilion
+      0xbfff00, // volt green
+      0x00ff99, // mint beam
+      0xff00cc, // hot magenta
+      0x99ff00, // neon grass
+      0xff9900, // signal orange
+      0x00ffef, // bright turquoise
+      0xda00ff, // ultraviolet
     ],
   },
   {
@@ -106,35 +138,35 @@ const ROBOT_COLOR_PALETTES = [
     ],
   },
   {
-    id: "vibrant",
+    id: "neon",
     label: "Neon",
-    emissiveIntensity: 1.15,
+    emissiveIntensity: 2.4,
     receiveShadows: false,
     colors: [
-      0x00ffff, // electric cyan
-      0xff00ff, // electric magenta
-      0xffff00, // electric yellow
+      0x00ffff, // bright cyan
+      0xff00cc, // neon pink
+      0xff5a00, // bright orange
+      0xffff00, // highlighter yellow
       0x39ff14, // laser green
-      0xff073a, // neon red
-      0x00ffcc, // aqua glow
-      0xff1493, // hot pink
+      0xff007f, // hot rose
+      0x00bfff, // electric sky
+      0xff3300, // blaze vermilion
       0xccff00, // acid chartreuse
-      0xff5f1f, // blaze orange
-      0x00b7ff, // plasma blue
-      0xee00ff, // neon violet
-      0xaaff00, // toxic lime
-      0xffea00, // highlighter yellow
-      0x00ff66, // green glow
-      0xff0099, // punch pink
-      0x33ffff, // ice cyan
-      0xff3300, // hot vermilion
-      0xbfff00, // volt green
-      0x00ff99, // mint beam
-      0xff00cc, // hot magenta
-      0x99ff00, // neon grass
+      0xff00ff, // pure magenta
+      0x00ff99, // glowing mint
       0xff9900, // signal orange
-      0x00ffef, // bright turquoise
-      0xda00ff, // ultraviolet
+      0x7df9ff, // electric blue
+      0xff1493, // hot pink
+      0xadff2f, // green yellow
+      0xff6600, // safety orange
+      0x00ffef, // neon turquoise
+      0xfe019a, // fluorescent pink
+      0xfefe22, // fluorescent yellow
+      0xff00aa, // electric fuchsia
+      0x00ff33, // laser lime
+      0xff6ec7, // neon cotton candy
+      0xff2400, // scarlet neon
+      0xb6ff00, // toxic lime
     ],
   },
 ];
@@ -178,7 +210,7 @@ function createRobotSurfaceMaterial(hex, styleKey = robotColorStyleKey(hex)) {
 }
 
 // DOM refs
-let timestepEl, playPauseBtn, sliderEl;
+let timestepEl, playPauseBtn, sliderEl, playbackModeSelectEl, playbackSpeedSelectEl;
 let cameraPanelEl = null;
 
 function fmtNum(v, digits = 4) {
@@ -583,7 +615,13 @@ function poseToMatrix(pose) {
  */
 function buildObstacles(data) {
   const group = new THREE.Group();
-  const obstacleMat = new THREE.MeshLambertMaterial({ color: OBSTACLE_COLOR, side: THREE.DoubleSide });
+  const obstacleMat = new THREE.MeshLambertMaterial({
+    color: OBSTACLE_COLOR,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: OBSTACLE_OPACITY,
+    depthWrite: false,
+  });
   let sphereCount = 0;
   let cylinderCount = 0;
 
@@ -860,7 +898,7 @@ function addResultObstacles2DCrossSection(group, data) {
         radius,
         OBSTACLE_COLOR,
         0,
-        0.74,
+        OBSTACLE_OPACITY,
         10,
         outlineColor
       )) count++;
@@ -881,7 +919,7 @@ function addResultObstacles2DCrossSection(group, data) {
         halfLength,
         OBSTACLE_COLOR,
         0,
-        0.74,
+        OBSTACLE_OPACITY,
         10,
         outlineColor
       )) count++;
@@ -1061,8 +1099,12 @@ function addPlanar3CollisionCircle(group, center, colorHex) {
   );
 }
 
+function displayConfigForEntry(entry) {
+  return entry.playbackConfig ?? configAt(entry.robot, currentTimestep);
+}
+
 function addPlanar3RobotVisualCrossSection2D(group, entry, colorHex) {
-  const cfg = configAt(entry.robot, currentTimestep);
+  const cfg = displayConfigForEntry(entry);
   const base = robotBasePose2D(entry.robot);
   let joint = base.position.clone();
   let theta = base.yaw;
@@ -1092,7 +1134,7 @@ function addPlanar3RobotVisualCrossSection2D(group, entry, colorHex) {
 }
 
 function addPlanar3RobotCollisionCrossSection2D(group, entry, colorHex) {
-  const cfg = configAt(entry.robot, currentTimestep);
+  const cfg = displayConfigForEntry(entry);
   const base = robotBasePose2D(entry.robot);
   let joint = base.position.clone();
   let theta = base.yaw;
@@ -1160,7 +1202,10 @@ function refreshCrossSection2D() {
   const group = new THREE.Group();
   group.name = "z0_cross_section_2d";
   addResultObstacles2DCrossSection(group, resultData);
-  robotMeshes.forEach((entry) => addRobotEntry2DCrossSection(group, entry));
+  robotMeshes.forEach((entry) => {
+    if (entry.playbackVisible !== false)
+      addRobotEntry2DCrossSection(group, entry);
+  });
   group.visible = showCrossSection2D;
   crossSection2DGroup = group;
   scene.add(group);
@@ -1240,10 +1285,12 @@ function summarizeUrdfGeometry(urdfRobot) {
 
 function applyRobotGeometryModeToScene() {
   const show3D = !showCrossSection2D;
-  robotMeshes.forEach(({ mesh, urdfRobot, collisionUrdfRobot }) => {
-    if (mesh) mesh.visible = show3D;
+  robotMeshes.forEach((entry) => {
+    const { mesh, urdfRobot, collisionUrdfRobot } = entry;
+    const showRobot = entry.playbackVisible !== false;
+    if (mesh) mesh.visible = show3D && showRobot;
 
-    if (!show3D) {
+    if (!show3D || !showRobot) {
       if (urdfRobot) urdfRobot.visible = false;
       if (collisionUrdfRobot && collisionUrdfRobot !== urdfRobot) {
         collisionUrdfRobot.visible = false;
@@ -1416,6 +1463,7 @@ function applyRobotSolidColor(root, colorHex) {
 
 function refreshRobotSolidColors() {
   robotMeshes.forEach((entry) => {
+    if (entry.playbackVisible === false) return;
     if ((entry.materialStylePassesRemaining ?? 0) <= 0) return;
     if (entry.mesh) applyRobotSolidColor(entry.mesh, entry.colorHex);
     for (const root of uniqueRobotRoots(entry.urdfRobot, entry.collisionUrdfRobot)) {
@@ -1441,7 +1489,14 @@ function applyRobotPaletteToScene() {
 function setRobotColorPalette(paletteId) {
   if (!ROBOT_COLOR_PALETTE_BY_ID.has(paletteId)) return;
   selectedRobotPaletteId = paletteId;
-  applyRobotPaletteToScene();
+  if (playbackMode === "arc") {
+    robotMeshes.forEach((entry) => {
+      entry.colorHex = null;
+    });
+    updateRobotsForTimestep();
+  } else {
+    applyRobotPaletteToScene();
+  }
 }
 
 function initRobotPaletteSelect() {
@@ -1479,6 +1534,8 @@ function buildPlaceholderRobot(robot, colorHex) {
     robot,
     urdfRobot: null,
     colorHex,
+    playbackConfig: null,
+    playbackVisible: true,
     materialStylePassesRemaining: 120,
   };
 }
@@ -1547,39 +1604,343 @@ function uniqueRobotRoots(urdfRobot, collisionUrdfRobot) {
   return urdfRobot ? [urdfRobot] : [];
 }
 
+function applyRobotConfig(entry, cfg) {
+  const { mesh, robot, urdfRobot, collisionUrdfRobot } = entry;
+  entry.playbackConfig = cfg;
+  const pose = robot.base_pose || {
+    position: [0, 0, 0],
+    quaternion_xyzw: [0, 0, 0, 1],
+  };
+  const pos = pose.position || [0, 0, 0];
+  const q = pose.quaternion_xyzw || [0, 0, 0, 1];
+  if (urdfRobot) {
+    for (const root of uniqueRobotRoots(urdfRobot, collisionUrdfRobot)) {
+      root.position.set(pos[0], pos[1], pos[2]);
+      root.quaternion.set(q[0], q[1], q[2], q[3]);
+      applyJointConfig(root, robot, cfg);
+    }
+  } else if (mesh) {
+    if (robot.robot_type === "sphere" && cfg && cfg.length >= 3) {
+      mesh.position.set(cfg[0], cfg[1], cfg[2]);
+    } else {
+      mesh.position.set(pos[0], pos[1], pos[2]);
+    }
+    mesh.quaternion.set(q[0], q[1], q[2], q[3]);
+  }
+}
+
+function setRobotEntryColor(entry, colorHex) {
+  if (entry.colorHex === colorHex) return;
+  entry.colorHex = colorHex;
+  entry.materialStylePassesRemaining = 3;
+  if (entry.mesh) applyRobotSolidColor(entry.mesh, colorHex);
+  for (const root of uniqueRobotRoots(entry.urdfRobot, entry.collisionUrdfRobot)) {
+    applyRobotSolidColor(root, colorHex);
+  }
+}
+
+function updateSolutionPlayback() {
+  robotMeshes.forEach((entry, robotIndex) => {
+    entry.playbackVisible = true;
+    applyRobotConfig(entry, configAt(entry.robot, currentTimestep));
+    setRobotEntryColor(entry, robotColorHexForIndex(robotIndex));
+  });
+}
+
+function updateArcPlayback() {
+  const frame = arcTimeline[currentTimestep];
+  if (!frame) return;
+  const iteration =
+    resultData.arc_visualization.iterations[frame.iterationIndex];
+
+  if (frame.phase === "paths") {
+    robotMeshes.forEach((entry, robotIndex) => {
+      const firstConflict = firstReachedConflict(
+        iteration,
+        robotIndex,
+        frame.timestep
+      );
+      const robotTimestep = firstConflict
+        ? Number(firstConflict.timestep)
+        : frame.timestep;
+      entry.playbackVisible = true;
+      applyRobotConfig(
+        entry,
+        configAtPath(iteration.paths[robotIndex], robotTimestep)
+      );
+      setRobotEntryColor(
+        entry,
+        frame.solution
+          ? ARC_SOLUTION_COLOR
+          : firstConflict
+            ? ARC_CONFLICT_COLOR
+            : ARC_PATH_COLOR
+      );
+    });
+  } else {
+    robotMeshes.forEach((entry, robotIndex) => {
+      const repairIndex = iteration.repairs.findIndex((repair) =>
+        repair.robots.includes(robotIndex)
+      );
+      if (repairIndex < 0) {
+        entry.playbackVisible = false;
+        return;
+      }
+      const repair = iteration.repairs[repairIndex];
+      const robotPathIndex = repair.robots.indexOf(robotIndex);
+      entry.playbackVisible = true;
+      applyRobotConfig(
+        entry,
+        configAtPath(repair.paths[robotPathIndex], frame.timestep)
+      );
+      const colorIndex = Number.isInteger(repair.conflict_index)
+        ? repair.conflict_index
+        : repairIndex;
+      setRobotEntryColor(
+        entry,
+        ARC_GROUP_COLORS[colorIndex % ARC_GROUP_COLORS.length]
+      );
+    });
+  }
+
+}
+
 /**
- * Update robot poses for current timestep.
- * For sphere robots (robot_type === "sphere"), config [x,y,z] is the position.
+ * Update robot poses for the active playback mode.
  */
 function updateRobotsForTimestep() {
   if (!resultData) return;
-  robotMeshes.forEach(({ mesh, robot, urdfRobot, collisionUrdfRobot }) => {
-    const cfg = configAt(robot, currentTimestep);
-    const pose = robot.base_pose || { position: [0, 0, 0], quaternion_xyzw: [0, 0, 0, 1] };
-    const pos = pose.position || [0, 0, 0];
-    const q = pose.quaternion_xyzw || [0, 0, 0, 1];
-    if (urdfRobot) {
-      for (const root of uniqueRobotRoots(urdfRobot, collisionUrdfRobot)) {
-        root.position.set(pos[0], pos[1], pos[2]);
-        root.quaternion.set(q[0], q[1], q[2], q[3]);
-        applyJointConfig(root, robot, cfg);
-      }
-    } else {
-      // Sphere robots: config [x,y,z] is the world position
-      if (robot.robot_type === "sphere" && cfg && cfg.length >= 3) {
-        mesh.position.set(cfg[0], cfg[1], cfg[2]);
-      } else {
-        mesh.position.set(pos[0], pos[1], pos[2]);
-      }
-      mesh.quaternion.set(q[0], q[1], q[2], q[3]);
-    }
-  });
+  if (playbackMode === "arc") updateArcPlayback();
+  else updateSolutionPlayback();
+  applyRobotGeometryModeToScene();
   if (showCrossSection2D) refreshCrossSection2D();
 }
 
 /**
  * Update UI.
  */
+function playbackFrameCount() {
+  if (!resultData) return 0;
+  return playbackMode === "arc"
+    ? arcTimeline.length
+    : Math.max(0, Number(resultData.timesteps) || 0);
+}
+
+function clearArcLegend() {
+  const legend = document.getElementById("arc-legend");
+  if (legend) legend.replaceChildren();
+}
+
+function addArcLegendItem(colorHex, label) {
+  const legend = document.getElementById("arc-legend");
+  if (!legend) return;
+  const item = document.createElement("span");
+  item.className = "arc-legend-item";
+  const swatch = document.createElement("span");
+  swatch.className = "arc-swatch";
+  swatch.style.backgroundColor = `#${colorHex.toString(16).padStart(6, "0")}`;
+  const text = document.createElement("span");
+  text.textContent = label;
+  item.append(swatch, text);
+  legend.appendChild(item);
+}
+
+function updateArcStageBox(frame) {
+  const box = document.getElementById("arc-stage-box");
+  const label = document.getElementById("arc-stage-label");
+  if (!box || !label) return;
+
+  if (playbackMode !== "arc" || !frame) {
+    box.hidden = true;
+    return;
+  }
+
+  const complete = frame.solution === true;
+  const resolving = !complete && frame.phase === "repairs";
+  label.textContent = complete
+    ? "Complete"
+    : resolving
+      ? "Conflict Resolution"
+      : "Conflict Detection";
+  label.classList.toggle("conflict-detection", !complete && !resolving);
+  label.classList.toggle("conflict-resolution", resolving);
+  label.classList.toggle("complete", complete);
+  box.hidden = false;
+}
+
+function initArcStageBox() {
+  const box = document.getElementById("arc-stage-box");
+  if (!box) return;
+
+  const toolbar = document.getElementById("toolbar");
+  const initialTop = Math.max(12, (toolbar?.getBoundingClientRect().bottom || 0) + 12);
+  box.style.left = "12px";
+  box.style.top = `${initialTop}px`;
+
+  let drag = null;
+  const clampPosition = (left, top) => ({
+    left: Math.max(0, Math.min(left, window.innerWidth - box.offsetWidth)),
+    top: Math.max(0, Math.min(top, window.innerHeight - box.offsetHeight)),
+  });
+
+  box.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = box.getBoundingClientRect();
+    drag = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+    };
+    box.setPointerCapture(event.pointerId);
+  });
+
+  box.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const position = clampPosition(
+      event.clientX - drag.offsetX,
+      event.clientY - drag.offsetY
+    );
+    box.style.left = `${position.left}px`;
+    box.style.top = `${position.top}px`;
+  });
+
+  const finishDrag = (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    drag = null;
+    if (box.hasPointerCapture(event.pointerId)) {
+      box.releasePointerCapture(event.pointerId);
+    }
+  };
+  box.addEventListener("pointerup", finishDrag);
+  box.addEventListener("pointercancel", finishDrag);
+
+  window.addEventListener("resize", () => {
+    if (box.hidden) return;
+    const rect = box.getBoundingClientRect();
+    const position = clampPosition(rect.left, rect.top);
+    box.style.left = `${position.left}px`;
+    box.style.top = `${position.top}px`;
+  });
+}
+
+function updateArcPanel() {
+  const panel = document.getElementById("arc-panel");
+  const stage = document.getElementById("arc-stage");
+  const detail = document.getElementById("arc-detail");
+  if (!panel || !stage || !detail) return;
+  if (playbackMode !== "arc" || arcTimeline.length === 0) {
+    panel.hidden = true;
+    updateArcStageBox(null);
+    clearArcLegend();
+    return;
+  }
+
+  panel.hidden = false;
+  clearArcLegend();
+  const frame = arcTimeline[currentTimestep];
+  updateArcStageBox(frame);
+  const iteration =
+    resultData.arc_visualization.iterations[frame.iterationIndex];
+  const roundLabel =
+    `Round ${frame.iterationIndex + 1} of ` +
+    `${resultData.arc_visualization.iterations.length}`;
+  const planner = resultData.arc_visualization.planner || resultData.solver || "ARC";
+
+  if (frame.phase === "paths") {
+    if (frame.solution) {
+      stage.textContent = `${planner} · ${roundLabel} · Solution found`;
+      detail.textContent =
+        `No conflicts in the complete path set · path timestep ` +
+        `${frame.timestep} of ${frame.phaseEnd}`;
+      addArcLegendItem(ARC_SOLUTION_COLOR, "valid solution");
+      return;
+    }
+
+    stage.textContent = `${planner} · ${roundLabel} · Conflict detection`;
+    if (!iteration.conflict_scan_completed) {
+      detail.textContent =
+        `Saved path set · path timestep ${frame.timestep} of ${frame.phaseEnd} · ` +
+        `conflict scan did not complete`;
+      addArcLegendItem(ARC_PATH_COLOR, "unchecked path");
+      return;
+    }
+
+    const reached = iteration.conflicts.filter(
+      (conflict) => Number(conflict.timestep) <= frame.timestep
+    ).length;
+    const conflictPauseTimesteps = arcFrameDurationTimesteps(
+      resultData,
+      frame,
+      playbackSpeedMultiplier
+    );
+    const conflictPause =
+      conflictPauseTimesteps > 1
+        ? ` · paused for ${fmtNum(conflictPauseTimesteps, 2)} playback steps`
+        : "";
+    detail.textContent =
+      `Path timestep ${frame.timestep} of ${frame.phaseEnd} · ` +
+      `${reached} of ${iteration.conflicts.length} conflicts reached` +
+      conflictPause;
+    addArcLegendItem(ARC_PATH_COLOR, "advancing");
+    iteration.conflicts.forEach((conflict, conflictIndex) => {
+      addArcLegendItem(
+        ARC_CONFLICT_COLOR,
+        `C${conflictIndex + 1}: robots ${conflictRobots(conflict).join(", ")} ` +
+          `at t=${conflict.timestep}`
+      );
+    });
+    return;
+  }
+
+  const workerCount = resultData.arc_visualization.workers || 1;
+  stage.textContent =
+    `${planner} · ${roundLabel} · ` +
+    `${workerCount > 1 ? "Parallel local repair" : "Local repair"}`;
+  detail.textContent =
+    `Local step ${frame.timestep} of ${frame.phaseEnd} · ` +
+    `${iteration.repairs.length} subproblem` +
+    `${iteration.repairs.length === 1 ? "" : "s"} · ${workerCount} worker` +
+    `${workerCount === 1 ? "" : "s"}`;
+  iteration.repairs.forEach((repair, repairIndex) => {
+    const colorIndex = Number.isInteger(repair.conflict_index)
+      ? repair.conflict_index
+      : repairIndex;
+    addArcLegendItem(
+      ARC_GROUP_COLORS[colorIndex % ARC_GROUP_COLORS.length],
+      `C${colorIndex + 1}: robots ${repair.robots.join(", ")}`
+    );
+  });
+}
+
+function syncPlaybackModeControl() {
+  if (!playbackModeSelectEl) return;
+  const arcOption = playbackModeSelectEl.querySelector('option[value="arc"]');
+  if (arcOption) arcOption.disabled = arcTimeline.length === 0;
+  playbackModeSelectEl.value = playbackMode;
+  const paletteSelect = document.getElementById("palette-select");
+  if (paletteSelect) paletteSelect.disabled = playbackMode === "arc";
+}
+
+function stopPlayback() {
+  isPlaying = false;
+  if (playTimerId !== null) clearTimeout(playTimerId);
+  playTimerId = null;
+}
+
+function setPlaybackMode(mode) {
+  const nextMode = mode === "arc" && arcTimeline.length > 0 ? "arc" : "solution";
+  stopPlayback();
+  playbackMode = nextMode;
+  currentTimestep = 0;
+  syncPlaybackModeControl();
+  updateRobotsForTimestep();
+  updateUI();
+}
+
 function updateUI() {
   if (!resultData) {
     if (timestepEl) timestepEl.textContent = "Timestep 0 / 0";
@@ -1588,20 +1949,29 @@ function updateUI() {
       playPauseBtn.disabled = true;
     }
     if (sliderEl) sliderEl.disabled = true;
+    updateArcPanel();
+    syncPlaybackModeControl();
     syncCrossSectionToggleButton();
     return;
   }
-  const maxT = Math.max(0, resultData.timesteps - 1);
-  if (timestepEl) timestepEl.textContent = `Timestep ${currentTimestep} / ${maxT}`;
+  const frameCount = playbackFrameCount();
+  const maxT = Math.max(0, frameCount - 1);
+  if (timestepEl) {
+    timestepEl.textContent = playbackMode === "arc"
+      ? `Frame ${currentTimestep + 1} / ${Math.max(1, frameCount)}`
+      : `Timestep ${currentTimestep} / ${maxT}`;
+  }
   if (sliderEl) {
-    sliderEl.disabled = false;
+    sliderEl.disabled = frameCount <= 1;
     sliderEl.value = currentTimestep;
     sliderEl.max = maxT;
   }
   if (playPauseBtn) {
-    playPauseBtn.disabled = maxT <= 0;
+    playPauseBtn.disabled = frameCount <= 1;
     playPauseBtn.textContent = isPlaying ? "Pause" : "Play";
   }
+  syncPlaybackModeControl();
+  updateArcPanel();
   syncCrossSectionToggleButton();
 }
 
@@ -1610,7 +1980,7 @@ function updateUI() {
  */
 function setTimestep(t) {
   if (!resultData) return;
-  const maxT = Math.max(0, resultData.timesteps - 1);
+  const maxT = Math.max(0, playbackFrameCount() - 1);
   currentTimestep = Math.max(0, Math.min(t, maxT));
   updateRobotsForTimestep();
   updateUI();
@@ -1623,25 +1993,55 @@ function step(delta) {
   setTimestep(currentTimestep + delta);
 }
 
+function currentFrameDurationTimesteps() {
+  if (playbackMode !== "arc") return 1;
+  return arcFrameDurationTimesteps(
+    resultData,
+    arcTimeline[currentTimestep],
+    playbackSpeedMultiplier
+  );
+}
+
+function currentPlaybackDelayMs() {
+  return (
+    (1000 * currentFrameDurationTimesteps()) /
+    (PLAY_FPS * playbackSpeedMultiplier)
+  );
+}
+
+function scheduleNextPlaybackStep() {
+  if (!isPlaying) return;
+  playTimerId = setTimeout(() => {
+    playTimerId = null;
+    if (!isPlaying) return;
+    if (currentTimestep >= playbackFrameCount() - 1) {
+      stopPlayback();
+      updateUI();
+      return;
+    }
+    step(1);
+    scheduleNextPlaybackStep();
+  }, currentPlaybackDelayMs());
+}
+
+function restartPlaybackTimer() {
+  if (!isPlaying) return;
+  if (playTimerId !== null) clearTimeout(playTimerId);
+  playTimerId = null;
+  scheduleNextPlaybackStep();
+}
+
 /**
  * Toggle play/pause.
  */
 function togglePlay() {
+  if (playbackFrameCount() <= 1) return;
   isPlaying = !isPlaying;
   if (isPlaying) {
-    playIntervalId = setInterval(() => {
-      if (currentTimestep >= resultData.timesteps - 1) {
-        isPlaying = false;
-        if (playIntervalId) clearInterval(playIntervalId);
-      } else {
-        step(1);
-      }
-    }, 1000 / PLAY_FPS);
+    scheduleNextPlaybackStep();
   } else {
-    if (playIntervalId) {
-      clearInterval(playIntervalId);
-      playIntervalId = null;
-    }
+    if (playTimerId !== null) clearTimeout(playTimerId);
+    playTimerId = null;
   }
   updateUI();
 }
@@ -1665,7 +2065,7 @@ function onKeyDown(e) {
       e.preventDefault();
       break;
     case "End":
-      setTimestep(resultData.timesteps - 1);
+      setTimestep(playbackFrameCount() - 1);
       e.preventDefault();
       break;
     case "Space":
@@ -1943,8 +2343,12 @@ async function loadFirstUrdfRobotWithSolidColor(assetBase, urdfPaths, colorHex) 
  * Load result and build scene. Loads URDFs when urdf_path is present.
  */
 async function loadResult(data) {
+  stopPlayback();
   resultData = data;
+  arcTimeline = buildArcTimeline(data);
+  playbackMode = arcTimeline.length > 0 ? "arc" : "solution";
   currentTimestep = 0;
+  syncPlaybackModeControl();
 
   clearCrossSection2DGroup();
   obstacleMeshes.forEach((m) => scene.remove(m));
@@ -2013,6 +2417,8 @@ async function loadResult(data) {
           urdfRobot,
           collisionUrdfRobot,
           colorHex: robotColor,
+          playbackConfig: null,
+          playbackVisible: true,
           materialStylePassesRemaining: 120,
         });
         scene.add(urdfRobot);
@@ -2098,11 +2504,14 @@ function animate() {
 function init() {
   initScene();
   initCameraPanel();
+  initArcStageBox();
   syncCameraInputsFromOrbit();
 
   timestepEl = document.getElementById("timestep");
   playPauseBtn = document.getElementById("play-pause");
   sliderEl = document.getElementById("timestep-slider");
+  playbackModeSelectEl = document.getElementById("playback-mode-select");
+  playbackSpeedSelectEl = document.getElementById("playback-speed-select");
   initRobotPaletteSelect();
 
   document.getElementById("file-input").addEventListener("change", (e) => {
@@ -2114,6 +2523,24 @@ function init() {
   });
 
   if (playPauseBtn) playPauseBtn.addEventListener("click", togglePlay);
+
+  if (playbackModeSelectEl) {
+    playbackModeSelectEl.addEventListener("change", (event) => {
+      setPlaybackMode(event.target.value);
+    });
+  }
+
+  if (playbackSpeedSelectEl) {
+    playbackSpeedMultiplier =
+      Number(playbackSpeedSelectEl.value) || playbackSpeedMultiplier;
+    playbackSpeedSelectEl.addEventListener("change", (event) => {
+      const nextSpeed = Number(event.target.value);
+      if (!Number.isFinite(nextSpeed) || nextSpeed <= 0) return;
+      playbackSpeedMultiplier = nextSpeed;
+      updateUI();
+      restartPlaybackTimer();
+    });
+  }
 
   if (sliderEl) {
     sliderEl.addEventListener("input", (e) => setTimestep(parseInt(e.target.value, 10)));

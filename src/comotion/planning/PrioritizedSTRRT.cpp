@@ -1,4 +1,6 @@
 #include "comotion/planning/PrioritizedSTRRT.h"
+#include "comotion/planning/PlanningSeed.h"
+#include "comotion/planning/detail/SeededOmpl.h"
 #include "comotion/planning/detail/StrrtBatchInflation.h"
 #include <ompl/geometric/SimpleSetup.h>
 #include <ompl/geometric/planners/rrt/STRRTstar.h>
@@ -27,6 +29,12 @@ public:
         : og::STRRTstar(si) {}
 
     unsigned int iterationCount() const { return numIterations_; }
+
+    void setLocalSeeds(std::uint_fast32_t planner_seed,
+                       std::uint_fast32_t conditional_sampler_seed) {
+        rng_.setLocalSeed(planner_seed);
+        sampler_.setLocalSeed(conditional_sampler_seed);
+    }
 };
 
 double pathDurationSeconds(const Path &path, size_t resolution) {
@@ -218,12 +226,31 @@ ompl::base::PlannerStatus PrioritizedSTRRT::solve(double timeLimit) {
             std::shuffle(order.begin(), order.end(), rng);
         }
     }
+    std::vector<std::uint_fast32_t> state_sampler_seeds;
+    std::vector<std::uint_fast32_t> time_sampler_seeds;
+    std::vector<std::uint_fast32_t> planner_local_seeds;
+    std::vector<std::uint_fast32_t> conditional_sampler_seeds;
+    std::vector<std::uint_fast32_t> simplifier_local_seeds;
+    state_sampler_seeds.reserve(order.size());
+    time_sampler_seeds.reserve(order.size());
+    planner_local_seeds.reserve(order.size());
+    conditional_sampler_seeds.reserve(order.size());
+    simplifier_local_seeds.reserve(order.size());
     const auto finalizePlannerStats = [&]() {
         nlohmann::json stats = nlohmann::json::object();
         stats["priority_order"] = order;
         stats["priority_groups"] = priority_groups_;
         stats["shuffle_priority_order"] = shuffle_priority_order_;
         stats["return_first_solution"] = return_first_solution_;
+        stats["persist_at_goal"] = persist_at_goal_;
+        stats["simplify_after_plan"] = simplify_after_plan_;
+        stats["path_simplification"] = {
+            {"max_shortcut_steps",
+             simplification_options_.max_shortcut_steps},
+            {"max_empty_steps", simplification_options_.max_empty_steps},
+            {"max_smooth_steps", simplification_options_.max_smooth_steps},
+            {"max_passes", simplification_options_.max_passes},
+        };
         stats["strrt_rewiring"] = strrtRewiringName(strrt_rewiring_);
         stats["use_unbounded_time"] = use_unbounded_time_;
         stats["inflate_initial_batch_from_min_goal_time"] =
@@ -238,6 +265,12 @@ ompl::base::PlannerStatus PrioritizedSTRRT::solve(double timeLimit) {
         stats["strrt_max_iterations"] = strrt_max_iterations_;
         stats["per_robot_time_fraction"] = per_robot_fraction_;
         stats["robot_solve_times_seconds"] = last_robot_solve_times_seconds_;
+        stats["planning_seed"] = planning_seed_;
+        stats["state_sampler_seeds"] = state_sampler_seeds;
+        stats["time_sampler_seeds"] = time_sampler_seeds;
+        stats["planner_local_seeds"] = planner_local_seeds;
+        stats["conditional_sampler_seeds"] = conditional_sampler_seeds;
+        stats["simplifier_local_seeds"] = simplifier_local_seeds;
         setPlannerStatsJson(std::move(stats));
     };
 
@@ -285,9 +318,35 @@ ompl::base::PlannerStatus PrioritizedSTRRT::solve(double timeLimit) {
         }
 
         auto vectorSpace = problem_->createStateSpace(robot_idx);
+        const auto state_sampler_seed = prioritizedStrrtComponentSeed(
+            planning_seed_, kPlanningSeedDomainStrrtStateSampler, robot_idx);
+        vectorSpace->setStateSamplerAllocator(
+            [state_sampler_seed](const ob::StateSpace *sampler_space) {
+                return std::make_shared<detail::SeededRealVectorStateSampler>(
+                    sampler_space, state_sampler_seed);
+            });
         const double vmax = problem_->vmax();
         auto space =
             std::make_shared<ob::SpaceTimeStateSpace>(vectorSpace, vmax);
+        const auto time_sampler_seed = prioritizedStrrtComponentSeed(
+            planning_seed_, kPlanningSeedDomainStrrtTimeSampler, robot_idx);
+        space->getTimeComponent()->setStateSamplerAllocator(
+            [time_sampler_seed](const ob::StateSpace *sampler_space) {
+                return std::make_shared<detail::SeededTimeStateSampler>(
+                    sampler_space, time_sampler_seed);
+            });
+        const auto planner_local_seed = prioritizedStrrtComponentSeed(
+            planning_seed_, kPlanningSeedDomainStrrtPlanner, robot_idx);
+        const auto conditional_sampler_seed = prioritizedStrrtComponentSeed(
+            planning_seed_, kPlanningSeedDomainStrrtConditionalSampler,
+            robot_idx);
+        const auto simplifier_local_seed = prioritizedStrrtComponentSeed(
+            planning_seed_, kPlanningSeedDomainStrrtSimplifier, robot_idx);
+        state_sampler_seeds.push_back(state_sampler_seed);
+        time_sampler_seeds.push_back(time_sampler_seed);
+        planner_local_seeds.push_back(planner_local_seed);
+        conditional_sampler_seeds.push_back(conditional_sampler_seed);
+        simplifier_local_seeds.push_back(simplifier_local_seed);
         const double min_safe_arrival_time =
             static_cast<double>(min_safe_arrival_ts) /
             static_cast<double>(resolution);
@@ -395,6 +454,8 @@ ompl::base::PlannerStatus PrioritizedSTRRT::solve(double timeLimit) {
                                  : batch_inflation.base_batch_size;
 
         auto planner = std::make_shared<LimitedSTRRTstar>(si);
+        planner->setLocalSeeds(planner_local_seed,
+                               conditional_sampler_seed);
         planner->setRange(vmax);
         planner->setBatchSize(static_cast<int>(std::min<unsigned int>(
             planner_batch_size,
@@ -457,8 +518,13 @@ ompl::base::PlannerStatus PrioritizedSTRRT::solve(double timeLimit) {
             return status;
         }
 
-        if (simplify_after_plan_)
-            setup.simplifySolution();
+        if (simplify_after_plan_) {
+            auto simplifier = std::make_shared<detail::SeededPathSimplifier>(
+                si, simplifier_local_seed, setup.getGoal(),
+                setup.getOptimizationObjective());
+            detail::simplifyPathBounded(setup.getSolutionPath(), simplifier,
+                                        simplification_options_);
+        }
         auto &gpath = setup.getSolutionPath();
         gpath.interpolate();
 

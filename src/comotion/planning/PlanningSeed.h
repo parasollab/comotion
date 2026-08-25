@@ -75,6 +75,22 @@ inline constexpr std::uint64_t kPlanningSeedDomainParallelArcRepair =
     0x504152435f525052ULL; // "PARC_RPR"
 inline constexpr std::uint64_t kPlanningSeedDomainParallelArcAttempt =
     0x504152435f415454ULL; // "PARC_ATT"
+inline constexpr std::uint64_t kPlanningSeedDomainStrrtStateSampler =
+    0x53545252545f5354ULL; // "STRRT_ST"
+inline constexpr std::uint64_t kPlanningSeedDomainStrrtTimeSampler =
+    0x53545252545f544dULL; // "STRRT_TM"
+inline constexpr std::uint64_t kPlanningSeedDomainStrrtPlanner =
+    0x53545252545f504cULL; // "STRRT_PL"
+inline constexpr std::uint64_t kPlanningSeedDomainStrrtConditionalSampler =
+    0x53545252545f434eULL; // "STRRT_CN"
+inline constexpr std::uint64_t kPlanningSeedDomainStrrtSimplifier =
+    0x53545252545f5349ULL; // "STRRT_SI"
+inline constexpr std::uint64_t kPlanningSeedDomainAorrtcSingleBounded =
+    0x414f525f53424e44ULL; // "AOR_SBND"
+inline constexpr std::uint64_t kPlanningSeedDomainAorrtcCompositeBounded =
+    0x414f525f43424e44ULL; // "AOR_CBND"
+inline constexpr std::uint64_t kPlanningSeedDomainAorrtcCompositeAnytime =
+    0x414f525f43414e59ULL; // "AOR_CANY"
 
 inline std::uint32_t arcRepairAttemptPlanningSeed(
     std::uint32_t parent_seed, std::uint64_t repair_id,
@@ -126,6 +142,18 @@ inline std::uint_fast32_t compositeRrtPathSimplifierSeed(
     std::uint32_t planning_seed) {
     return derivePlanningSeed(planning_seed,
                               kPlanningSeedDomainCompositeRrtSimplifier);
+}
+
+inline std::uint_fast32_t prioritizedStrrtComponentSeed(
+    std::uint32_t planning_seed, std::uint64_t domain, int robot_index) {
+    return derivePlanningSeed(planning_seed, domain,
+                              static_cast<std::uint64_t>(robot_index));
+}
+
+inline std::uint_fast32_t aorrtcComponentSeed(
+    std::uint32_t planning_seed, std::uint64_t solve_domain,
+    std::uint64_t component) {
+    return derivePlanningSeed(planning_seed, solve_domain, component);
 }
 
 /// Salt for `omplLocalSeedFromUserPlanningSeed` reserved for MRdRRT phase-2 (tensor) sampling.
