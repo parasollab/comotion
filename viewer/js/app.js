@@ -6,7 +6,7 @@
 import * as THREE from "three";
 import { TrackballControls } from "three/examples/jsm/controls/TrackballControls.js";
 import { parseResult, configAt } from "./schema.js";
-import { createURDFLoader, loadURDFAsync } from "./urdf-loader.js?v=2";
+import { createURDFLoader, loadURDFAsync } from "./urdf-loader.js?v=9";
 
 // Panda 7-DOF joint names (matches planner config order)
 const PANDA_JOINT_NAMES = [
@@ -17,8 +17,11 @@ const PANDA_JOINT_NAMES = [
 // State
 let scene, camera, renderer, controls;
 let ambientLight = null;
+let hemisphereLight = null;
 let sunLight = null;
-/** When true: dim ambient + directional sun (shadows). When false: bright ambient, sun off. */
+let fillLight = null;
+let rimLight = null;
+/** When true: key/fill lighting with shadows. When false: bright ambient, directional lights off. */
 let lightingKeyMode = true;
 /** When true: URDF robots show collision primitives; when false: visual meshes only. */
 let showRobotCollisionGeometry = false;
@@ -36,6 +39,8 @@ const CROSS_SECTION_Z = 0;
 const CROSS_SECTION_EPS = 1e-6;
 const PLANAR3_LINK_LENGTH = 0.3;
 const PLANAR3_LINK_RADIUS = 0.05;
+const DEFAULT_PANDA_VISUAL_URDF_PATH = "resources/panda/panda.urdf";
+const PANDA_RESOURCE_REVISION = "20260824-real-visual-1";
 
 function scaleRgbHex(hex, k) {
   const r = Math.round(((hex >> 16) & 0xff) * k);
@@ -47,23 +52,129 @@ function scaleRgbHex(hex, k) {
 /** Prior light gray, darkened 20% (RGB scale 0.8). */
 const OBSTACLE_COLOR = scaleRgbHex(0xd4d4d4, 0.8);
 
-/** One saturated color per robot (URDF + placeholders). */
-function randomRobotColorHex() {
-  const h = Math.random();
-  const s = 0.52 + Math.random() * 0.35;
-  const l = 0.4 + Math.random() * 0.22;
-  return new THREE.Color().setHSL(h, s, l).getHex();
+const ROBOT_COLOR_PALETTES = [
+  {
+    id: "neutral",
+    label: "Neutral",
+    colors: [
+      0x2447b8, // royal blue
+      0xd4a017, // gold
+      0x6f2da8, // imperial purple
+      0x007a5e, // emerald
+      0xb00020, // ruby
+      0x007c89, // peacock
+      0x7a1e3a, // burgundy
+      0x0b3d91, // sapphire
+      0xa0006d, // royal magenta
+      0x145a32, // deep forest
+      0xb65a00, // burnished orange
+      0x3f2e8c, // indigo
+      0x9e2a2b, // garnet
+      0x008060, // jade
+      0x5c2751, // plum
+      0x4a5d8f, // steel blue
+    ],
+  },
+  {
+    id: "royal",
+    label: "Royal",
+    colors: [
+      0x0033a0, // royal blue
+      0xd4af37, // metallic gold
+      0x6a0dad, // royal purple
+      0x005a32, // deep emerald
+      0x9b111e, // ruby
+      0x0047ab, // cobalt
+      0x702963, // byzantium
+      0x0f52ba, // sapphire
+      0x800020, // burgundy
+      0x006b54, // jade
+      0xc04000, // mahogany orange
+      0x32127a, // persian indigo
+      0xb31b1b, // garnet
+      0x008080, // regal teal
+      0x4b0082, // indigo
+      0xe0b0ff, // mauve
+      0xbf5700, // burnt gold
+      0x5d3fd3, // iris
+      0x006400, // royal green
+      0x8b008b, // deep magenta
+      0x1f305e, // midnight blue
+      0xa67c00, // antique gold
+      0x722f37, // wine
+      0x2e8b57, // sea emerald
+    ],
+  },
+  {
+    id: "vibrant",
+    label: "Neon",
+    emissiveIntensity: 1.15,
+    receiveShadows: false,
+    colors: [
+      0x00ffff, // electric cyan
+      0xff00ff, // electric magenta
+      0xffff00, // electric yellow
+      0x39ff14, // laser green
+      0xff073a, // neon red
+      0x00ffcc, // aqua glow
+      0xff1493, // hot pink
+      0xccff00, // acid chartreuse
+      0xff5f1f, // blaze orange
+      0x00b7ff, // plasma blue
+      0xee00ff, // neon violet
+      0xaaff00, // toxic lime
+      0xffea00, // highlighter yellow
+      0x00ff66, // green glow
+      0xff0099, // punch pink
+      0x33ffff, // ice cyan
+      0xff3300, // hot vermilion
+      0xbfff00, // volt green
+      0x00ff99, // mint beam
+      0xff00cc, // hot magenta
+      0x99ff00, // neon grass
+      0xff9900, // signal orange
+      0x00ffef, // bright turquoise
+      0xda00ff, // ultraviolet
+    ],
+  },
+];
+
+const ROBOT_COLOR_PALETTE_BY_ID = new Map(ROBOT_COLOR_PALETTES.map((palette) => [palette.id, palette]));
+let selectedRobotPaletteId = ROBOT_COLOR_PALETTES[0].id;
+
+function currentRobotPaletteSpec() {
+  return ROBOT_COLOR_PALETTE_BY_ID.get(selectedRobotPaletteId) || ROBOT_COLOR_PALETTES[0];
 }
 
-function createRobotSurfaceMaterial(hex) {
-  return new THREE.MeshLambertMaterial({
+function currentRobotColorPalette() {
+  return currentRobotPaletteSpec().colors;
+}
+
+function robotColorHexForIndex(index) {
+  const palette = currentRobotColorPalette();
+  return palette[index % palette.length];
+}
+
+function robotColorStyleKey(hex) {
+  return `robot-${selectedRobotPaletteId}-${hex.toString(16).padStart(6, "0")}`;
+}
+
+function createRobotSurfaceMaterial(hex, styleKey = robotColorStyleKey(hex)) {
+  const glow = currentRobotPaletteSpec().emissiveIntensity ?? 0;
+  const material = new THREE.MeshLambertMaterial({
     color: hex,
+    emissive: glow > 0 ? hex : 0x000000,
+    emissiveIntensity: glow,
     vertexColors: false,
     transparent: false,
     opacity: 1,
     depthWrite: true,
     side: THREE.DoubleSide,
   });
+  material.toneMapped = glow <= 0;
+  material.userData.comotionSolidColor = hex;
+  material.userData.comotionColorStyleKey = styleKey;
+  return material;
 }
 
 // DOM refs
@@ -1055,13 +1166,17 @@ function refreshCrossSection2D() {
   scene.add(group);
 }
 
-function createRobotLineMaterial(hex) {
-  return new THREE.LineBasicMaterial({
+function createRobotLineMaterial(hex, styleKey = robotColorStyleKey(hex)) {
+  const material = new THREE.LineBasicMaterial({
     color: hex,
     transparent: false,
     opacity: 1,
     depthWrite: true,
+    depthTest: true,
   });
+  material.userData.comotionSolidColor = hex;
+  material.userData.comotionColorStyleKey = styleKey;
+  return material;
 }
 
 function isUrdfVisualNode(obj) {
@@ -1091,6 +1206,36 @@ function countUrdfColliderRoots(urdfRobot) {
     if (isUrdfColliderNode(obj)) n++;
   });
   return n;
+}
+
+function summarizeUrdfGeometry(urdfRobot) {
+  const visualMeshes = new Set();
+  const collisionMeshes = new Set();
+  urdfRobot.traverse((branch) => {
+    const target = isUrdfVisualNode(branch)
+      ? visualMeshes
+      : isUrdfColliderNode(branch)
+        ? collisionMeshes
+        : null;
+    if (!target) return;
+    branch.traverse((obj) => {
+      if (obj.isMesh) target.add(obj);
+    });
+  });
+
+  const summarize = (meshes) => {
+    let triangles = 0;
+    for (const mesh of meshes) {
+      const drawCount = mesh.geometry?.index?.count ??
+        mesh.geometry?.attributes?.position?.count ?? 0;
+      triangles += Math.floor(drawCount / 3);
+    }
+    return { meshes: meshes.size, triangles };
+  };
+  return {
+    visual: summarize(visualMeshes),
+    collision: summarize(collisionMeshes),
+  };
 }
 
 function applyRobotGeometryModeToScene() {
@@ -1140,7 +1285,9 @@ function applySceneDisplayMode() {
 function syncGeometryToggleButton() {
   const btn = document.getElementById("geometry-toggle");
   if (!btn) return;
-  btn.textContent = showRobotCollisionGeometry ? "Collision geo" : "Visual geo";
+  btn.textContent = showRobotCollisionGeometry
+    ? "Showing collision"
+    : "Showing visual";
   btn.title = showRobotCollisionGeometry
     ? "Showing URDF collision primitives. Click for visual meshes."
     : "Showing URDF visual meshes. Click for collision geometry.";
@@ -1198,37 +1345,118 @@ function toggleCrossSection2DMode() {
   setCrossSection2DMode(!showCrossSection2D);
 }
 
-/**
- * Replace every drawable material on a robot with a solid flat color.
- * OBJ polylines become LineSegments with default white LineBasicMaterial unless handled here.
- */
+function isStyledRobotMaterial(material, colorHex, requireDoubleSide, styleKey) {
+  return material?.userData?.comotionSolidColor === colorHex &&
+    material?.userData?.comotionColorStyleKey === styleKey &&
+    material.transparent === false &&
+    material.opacity === 1 &&
+    material.depthWrite === true &&
+    material.depthTest === true &&
+    material.colorWrite !== false &&
+    material.wireframe !== true &&
+    (!requireDoubleSide || material.side === THREE.DoubleSide);
+}
+
+function disposeMaterialList(material) {
+  if (Array.isArray(material)) {
+    material.forEach((m) => m?.dispose?.());
+    return;
+  }
+  material?.dispose?.();
+}
+
+function ensureMaterial(material, colorHex, requireDoubleSide, styleKey, factory) {
+  if (Array.isArray(material)) {
+    const styled = material.length > 0 &&
+      material.every((m) => isStyledRobotMaterial(m, colorHex, requireDoubleSide, styleKey));
+    if (styled) return material;
+    disposeMaterialList(material);
+    return material.length > 0 ? material.map(() => factory(colorHex, styleKey)) : factory(colorHex, styleKey);
+  }
+  if (isStyledRobotMaterial(material, colorHex, requireDoubleSide, styleKey)) {
+    return material;
+  }
+  disposeMaterialList(material);
+  return factory(colorHex, styleKey);
+}
+
 function applyRobotSolidColor(root, colorHex) {
-  root.traverse((c) => {
+  const styleKey = robotColorStyleKey(colorHex);
+  const receiveShadows = currentRobotPaletteSpec().receiveShadows !== false;
+  root?.traverse?.((c) => {
     if (c.isMesh) {
-      if (Array.isArray(c.material)) {
-        const oldMats = c.material;
-        oldMats.forEach((m) => m.dispose?.());
-        c.material = oldMats.map(() => createRobotSurfaceMaterial(colorHex));
-      } else {
-        c.material?.dispose?.();
-        c.material = createRobotSurfaceMaterial(colorHex);
-      }
+      c.material = ensureMaterial(
+        c.material,
+        colorHex,
+        true,
+        styleKey,
+        createRobotSurfaceMaterial
+      );
+      c.visible = true;
+      c.frustumCulled = false;
       c.castShadow = true;
-      c.receiveShadow = true;
+      c.receiveShadow = receiveShadows;
       return;
     }
     if (c.isLineSegments || c.isLine || c.isLineLoop) {
-      if (Array.isArray(c.material)) {
-        const oldMats = c.material;
-        oldMats.forEach((m) => m.dispose?.());
-        c.material = oldMats.map(() => createRobotLineMaterial(colorHex));
-      } else {
-        c.material?.dispose?.();
-        c.material = createRobotLineMaterial(colorHex);
-      }
+      c.material = ensureMaterial(
+        c.material,
+        colorHex,
+        false,
+        styleKey,
+        createRobotLineMaterial
+      );
+      c.visible = true;
+      c.frustumCulled = false;
       c.castShadow = false;
       c.receiveShadow = false;
     }
+  });
+}
+
+function refreshRobotSolidColors() {
+  robotMeshes.forEach((entry) => {
+    if ((entry.materialStylePassesRemaining ?? 0) <= 0) return;
+    if (entry.mesh) applyRobotSolidColor(entry.mesh, entry.colorHex);
+    for (const root of uniqueRobotRoots(entry.urdfRobot, entry.collisionUrdfRobot)) {
+      applyRobotSolidColor(root, entry.colorHex);
+    }
+    entry.materialStylePassesRemaining--;
+  });
+}
+
+function applyRobotPaletteToScene() {
+  robotMeshes.forEach((entry, robotIndex) => {
+    const colorHex = robotColorHexForIndex(robotIndex);
+    entry.colorHex = colorHex;
+    entry.materialStylePassesRemaining = 120;
+    if (entry.mesh) applyRobotSolidColor(entry.mesh, colorHex);
+    for (const root of uniqueRobotRoots(entry.urdfRobot, entry.collisionUrdfRobot)) {
+      applyRobotSolidColor(root, colorHex);
+    }
+  });
+  if (showCrossSection2D) refreshCrossSection2D();
+}
+
+function setRobotColorPalette(paletteId) {
+  if (!ROBOT_COLOR_PALETTE_BY_ID.has(paletteId)) return;
+  selectedRobotPaletteId = paletteId;
+  applyRobotPaletteToScene();
+}
+
+function initRobotPaletteSelect() {
+  const select = document.getElementById("palette-select");
+  if (!select) return;
+  select.innerHTML = "";
+  for (const palette of ROBOT_COLOR_PALETTES) {
+    const option = document.createElement("option");
+    option.value = palette.id;
+    option.textContent = palette.label;
+    select.appendChild(option);
+  }
+  select.value = selectedRobotPaletteId;
+  select.addEventListener("change", (event) => {
+    setRobotColorPalette(event.target.value);
   });
 }
 
@@ -1246,7 +1474,13 @@ function buildPlaceholderRobot(robot, colorHex) {
   const mesh = new THREE.Mesh(geom, createRobotSurfaceMaterial(colorHex));
   mesh.castShadow = true;
   mesh.receiveShadow = true;
-  return { mesh, robot, urdfRobot: null, colorHex };
+  return {
+    mesh,
+    robot,
+    urdfRobot: null,
+    colorHex,
+    materialStylePassesRemaining: 120,
+  };
 }
 
 /**
@@ -1463,17 +1697,21 @@ function initScene() {
   controls.staticMoving = false;
   controls.dynamicDampingFactor = 0.05;
 
-  ambientLight = new THREE.AmbientLight(0xffffff, 0.22);
+  ambientLight = new THREE.AmbientLight(0xffffff, 0.38);
   scene.add(ambientLight);
 
-  sunLight = new THREE.DirectionalLight(0xffffff, 1.05);
-  sunLight.position.set(0, 0, 100);
+  hemisphereLight = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.48);
+  scene.add(hemisphereLight);
+
+  sunLight = new THREE.DirectionalLight(0xffffff, 1.15);
+  sunLight.position.set(60, -80, 120);
   sunLight.target.position.set(0, 0, 0);
   scene.add(sunLight.target);
   scene.add(sunLight);
   sunLight.castShadow = true;
   sunLight.shadow.mapSize.set(2048, 2048);
   sunLight.shadow.bias = -0.00015;
+  sunLight.shadow.normalBias = 0.015;
   const sc = sunLight.shadow.camera;
   sc.near = 0.5;
   sc.far = 220;
@@ -1482,6 +1720,20 @@ function initScene() {
   sc.top = 10;
   sc.bottom = -10;
   sc.updateProjectionMatrix();
+
+  fillLight = new THREE.DirectionalLight(0xffffff, 0.72);
+  fillLight.position.set(-80, 55, 75);
+  fillLight.target.position.set(0, 0, 0);
+  scene.add(fillLight.target);
+  scene.add(fillLight);
+  fillLight.castShadow = false;
+
+  rimLight = new THREE.DirectionalLight(0xe8fbff, 0.42);
+  rimLight.position.set(-50, -90, 95);
+  rimLight.target.position.set(0, 0, 0);
+  scene.add(rimLight.target);
+  scene.add(rimLight);
+  rimLight.castShadow = false;
 
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -1496,24 +1748,34 @@ function initScene() {
 function syncLightingToggleButton() {
   const btn = document.getElementById("lighting-toggle");
   if (!btn) return;
-  btn.textContent = lightingKeyMode ? "Key + ambient" : "Ambient only";
+  btn.textContent = lightingKeyMode ? "Key + fill" : "Ambient only";
   btn.title = lightingKeyMode
-    ? "Directional sun + dim ambient (shadows on). Click for ambient-only fill."
-    : "Even ambient, directional off. Click to restore key light + shadows.";
+    ? "Angled key, broad fill, and shadows. Click for ambient-only lighting."
+    : "Even ambient lighting. Click to restore key, fill, and shadows.";
 }
 
 function applyLightingMode() {
-  if (!ambientLight || !sunLight) return;
+  if (!ambientLight || !hemisphereLight || !sunLight || !fillLight || !rimLight) return;
   if (lightingKeyMode) {
-    ambientLight.intensity = 0.22;
-    sunLight.intensity = 1.05;
+    ambientLight.intensity = 0.38;
+    hemisphereLight.intensity = 0.48;
+    sunLight.intensity = 1.15;
     sunLight.visible = true;
     sunLight.castShadow = true;
+    fillLight.intensity = 0.72;
+    fillLight.visible = true;
+    rimLight.intensity = 0.42;
+    rimLight.visible = true;
   } else {
-    ambientLight.intensity = 0.92;
+    ambientLight.intensity = 1.15;
+    hemisphereLight.intensity = 0.18;
     sunLight.intensity = 0;
     sunLight.visible = false;
     sunLight.castShadow = false;
+    fillLight.intensity = 0;
+    fillLight.visible = false;
+    rimLight.intensity = 0;
+    rimLight.visible = false;
   }
 }
 
@@ -1527,15 +1789,41 @@ function withTrailingSlash(url) {
   return url.endsWith("/") ? url : `${url}/`;
 }
 
-function robotVisualUrdfPath(robot) {
+function rawRobotVisualUrdfPath(robot) {
   return robot.visual_urdf_path || robot.urdf_path || "";
+}
+
+function isPandaRobot(robot) {
+  const type = String(robot.robot_type || "").toLowerCase();
+  const path = String(rawRobotVisualUrdfPath(robot)).toLowerCase();
+  return type === "panda" || path.includes("/panda/");
+}
+
+function isPandaSpherizedUrdf(path) {
+  const normalized = String(path || "").replace(/\\/g, "/").toLowerCase();
+  return normalized === "panda/panda_spherized.urdf" ||
+    normalized.endsWith("/panda/panda_spherized.urdf");
+}
+
+function robotVisualUrdfCandidates(robot) {
+  const path = rawRobotVisualUrdfPath(robot);
+  if (!path) return [];
+  const candidates =
+    isPandaRobot(robot) && isPandaSpherizedUrdf(path)
+      ? [DEFAULT_PANDA_VISUAL_URDF_PATH, path]
+      : [path];
+  return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
+}
+
+function robotVisualUrdfPath(robot) {
+  return robotVisualUrdfCandidates(robot)[0] || "";
 }
 
 function robotCollisionUrdfPath(robot) {
   if (robot.collision_urdf_path) return robot.collision_urdf_path;
   if (robot.planning_urdf_path) return robot.planning_urdf_path;
 
-  const visualPath = robotVisualUrdfPath(robot);
+  const visualPath = rawRobotVisualUrdfPath(robot);
   const lowerType = String(robot.robot_type || "").toLowerCase();
   const lowerPath = String(visualPath || "").toLowerCase();
   const isPlanar3 = lowerType === "planar3" || lowerPath.includes("planar3");
@@ -1549,7 +1837,13 @@ function robotCollisionUrdfPath(robot) {
 }
 
 function assetUrl(assetBase, path) {
-  return /^https?:\/\//i.test(path) ? path : new URL(path, assetBase).href;
+  const url = /^https?:\/\//i.test(path) ? new URL(path) : new URL(path, assetBase);
+  const normalizedPath = url.pathname.replace(/\\/g, "/").toLowerCase();
+  if (normalizedPath.endsWith("/panda/panda.urdf") ||
+      normalizedPath.endsWith("/panda/panda_spherized.urdf")) {
+    url.searchParams.set("assetRevision", PANDA_RESOURCE_REVISION);
+  }
+  return url.href;
 }
 
 /**
@@ -1597,20 +1891,52 @@ async function waitForUrdfMeshCallbacks(getPending, timeoutMs = 120000) {
 }
 
 /**
- * Load URDF, wait until async mesh files finish populating the tree, then apply solid color.
+ * Load URDF, wait until async mesh files finish populating the tree, then apply robot color.
  * URDFLoader's load() resolves after parse; geometry is added in mesh load callbacks later.
  */
-async function loadUrdfRobotWithSolidColor(assetBase, urdfUrl, colorHex) {
-  const loader = createURDFLoader(assetBase);
+async function loadUrdfRobotWithSolidColor(assetBase, urdfUrl, colorHex, geometryKind) {
+  const loader = createURDFLoader(assetBase, colorHex);
   const getPending =
     typeof loader.getPendingMeshLoads === "function"
       ? () => loader.getPendingMeshLoads()
       : () => 0;
-  const urdfRobot = await loadURDFAsync(loader, urdfUrl);
+  const urdfRobot = await loadURDFAsync(loader, urdfUrl, {
+    parseVisual: geometryKind === "visual",
+    parseCollision: geometryKind === "collision",
+  });
   await waitForUrdfMeshCallbacks(getPending);
   applyRobotSolidColor(urdfRobot, colorHex);
   setUrdfRobotGeometryVisibility(urdfRobot, showRobotCollisionGeometry);
+  const geometrySummary = summarizeUrdfGeometry(urdfRobot);
+  urdfRobot.userData.comotionGeometrySummary = geometrySummary;
+  console.info(
+    "[viewer] Loaded URDF geometry",
+    urdfUrl,
+    JSON.stringify(geometrySummary)
+  );
   return urdfRobot;
+}
+
+async function loadFirstUrdfRobotWithSolidColor(assetBase, urdfPaths, colorHex) {
+  let firstError = null;
+  for (const urdfPath of urdfPaths) {
+    try {
+      const urdfUrl = assetUrl(assetBase, urdfPath);
+      return {
+        urdfPath,
+        urdfRobot: await loadUrdfRobotWithSolidColor(
+          assetBase,
+          urdfUrl,
+          colorHex,
+          "visual"
+        ),
+      };
+    } catch (err) {
+      if (!firstError) firstError = err;
+      console.warn("[viewer] URDF load failed for", urdfPath, err);
+    }
+  }
+  throw firstError || new Error("No URDF paths available");
 }
 
 /**
@@ -1638,25 +1964,37 @@ async function loadResult(data) {
 
   const assetBase = getAssetBaseUrl();
 
-  for (const robot of data.robots) {
-    const robotColor = randomRobotColorHex();
-    const urdfPath = robotVisualUrdfPath(robot);
+  for (const [robotIndex, robot] of data.robots.entries()) {
+    const robotColor = robotColorHexForIndex(robotIndex);
+    const urdfPaths = robotVisualUrdfCandidates(robot);
     const collisionUrdfPath = robotCollisionUrdfPath(robot);
-    if (urdfPath) {
+    if (urdfPaths.length > 0) {
       try {
-        const urdfUrl = assetUrl(assetBase, urdfPath);
-        const urdfRobot = await loadUrdfRobotWithSolidColor(assetBase, urdfUrl, robotColor);
+        const { urdfPath, urdfRobot } = await loadFirstUrdfRobotWithSolidColor(
+          assetBase,
+          urdfPaths,
+          robotColor
+        );
+        if (urdfPath !== rawRobotVisualUrdfPath(robot)) {
+          console.info(
+            "[viewer] Using panda visual URDF",
+            urdfPath,
+            "for",
+            robot.name || robot.robot_type
+          );
+        }
         let collisionUrdfRobot = null;
-        if (collisionUrdfPath && collisionUrdfPath !== urdfPath) {
+        if (collisionUrdfPath) {
           try {
             const collisionUrl = assetUrl(assetBase, collisionUrdfPath);
             collisionUrdfRobot = await loadUrdfRobotWithSolidColor(
               assetBase,
               collisionUrl,
-              robotColor
+              robotColor,
+              "collision"
             );
             console.info(
-              "[viewer] Loaded separate collision URDF for",
+              "[viewer] Loaded collision-only geometry for",
               robot.name || robot.robot_type,
               collisionUrdfPath
             );
@@ -1675,12 +2013,13 @@ async function loadResult(data) {
           urdfRobot,
           collisionUrdfRobot,
           colorHex: robotColor,
+          materialStylePassesRemaining: 120,
         });
         scene.add(urdfRobot);
         if (collisionUrdfRobot) scene.add(collisionUrdfRobot);
         applyRobotGeometryModeToScene();
       } catch (err) {
-        console.warn("URDF load failed for", urdfPath, err);
+        console.warn("URDF load failed for", urdfPaths, err);
         const ph = buildPlaceholderRobot(robot, robotColor);
         robotMeshes.push(ph);
         scene.add(ph.mesh);
@@ -1749,6 +2088,7 @@ function animate() {
   requestAnimationFrame(animate);
   controls.update();
   syncCameraInputsFromOrbit();
+  refreshRobotSolidColors();
   renderer.render(scene, camera);
 }
 
@@ -1763,6 +2103,7 @@ function init() {
   timestepEl = document.getElementById("timestep");
   playPauseBtn = document.getElementById("play-pause");
   sliderEl = document.getElementById("timestep-slider");
+  initRobotPaletteSelect();
 
   document.getElementById("file-input").addEventListener("change", (e) => {
     const f = e.target.files[0];

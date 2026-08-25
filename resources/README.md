@@ -25,4 +25,4 @@ The table below records the release status visible from this repository.
 | Resource | Contents | Release status |
 | --- | --- | --- |
 | `planar3/` | Synthetic planar manipulator URDF, SRDF, and sphere model | Local synthetic model. |
-| `panda/` | Panda URDF/SRDF, conservative sphere model, and collision meshes | Derived from the VAMP/Robowflex Panda resources. See `THIRD_PARTY_NOTICES.md` and `LICENSES/` at the repository root. CoMotion changes the generated mesh URDF to use the packaged collision meshes for both collision and visualization so installed examples are self-contained. |
+| `panda/` | Panda URDF/SRDF, conservative sphere model, and visual/collision meshes | Derived from the VAMP/Robowflex Panda resources. See `THIRD_PARTY_NOTICES.md` and `LICENSES/` at the repository root. The packaged URDF uses the original visual meshes where available and retains the simplified meshes for collision checking. |

@@ -60,6 +60,7 @@ struct AppOptions {
     std::size_t resolution = 128;
     std::string output_dir = "benchmarks/results/panda_cage";
     bool output_paths = false;
+    bool output_endpoint_paths = false;
     std::optional<std::string> metrics_json_path;
     bool exit_nonzero_without_exact_solution = false;
 
@@ -228,6 +229,14 @@ std::string toRepoRelativePath(const std::string &path) {
     std::string p = path;
     while (p.size() >= 3 && p.substr(0, 3) == "../")
         p = p.substr(3);
+    const std::string external_vamp_resources =
+        "external/como-ompl/external/vamp/resources/";
+    if (p.rfind(external_vamp_resources, 0) == 0)
+        return p;
+    const auto external_pos =
+        p.find("/external/como-ompl/external/vamp/resources/");
+    if (external_pos != std::string::npos)
+        return p.substr(external_pos + 1);
     const auto pos = p.find("/resources/");
     if (p.rfind("resources/", 0) == 0)
         return p;
@@ -992,6 +1001,7 @@ void printUsage(const char *prog) {
         << "  --resolution <n>       Timesteps per second (default: 128)\n"
         << "  --metrics-json <path>  Write compact trial metrics JSON\n"
         << "  --output-paths         Write visualization result JSON and .pth files\n"
+        << "  --output-endpoint-paths Write fake two-state start/goal paths and exit\n"
         << "  --output-dir <dir>     Output directory for path artifacts\n"
         << "      (default: benchmarks/results/panda_cage)\n"
         << "  --urdf <path>          Override planning URDF\n"
@@ -1114,6 +1124,9 @@ AppOptions parseArgs(int argc, char **argv) {
             options.metrics_json_path = requireValue(i, argc, argv, arg);
         } else if (arg == "--output-paths") {
             options.output_paths = true;
+        } else if (arg == "--output-endpoint-paths" ||
+                   arg == "--output-endpoints") {
+            options.output_endpoint_paths = true;
         } else if (arg == "--output-dir") {
             options.output_dir = requireValue(i, argc, argv, arg);
         } else if (arg == "--urdf") {
@@ -1435,6 +1448,7 @@ AppOptions parseArgs(int argc, char **argv) {
              comotion::ConflictFindParallelAssignment::PairFirstGreedy ||
          conflict_find_assignment ==
              comotion::ConflictFindParallelAssignment::CyclicCoverGreedy) &&
+        !options.output_endpoint_paths &&
         options.collision_backend !=
             comotion::CollisionChecker::Backend::Vamp) {
         throw std::runtime_error(
@@ -1500,7 +1514,8 @@ int main(int argc, char **argv) {
             loadScenarioFromDoc(task_doc, options, task_source);
 
         const std::string collision_urdf = resolveResourcePath(options.urdf_rel);
-        const std::string visual_urdf = collision_urdf;
+        const std::string visual_urdf =
+            resolveResourcePath("panda/panda.urdf");
         const std::string srdf = resolveResourcePath(options.srdf_rel);
 
         const auto robots = loadRobots(generated, collision_urdf, srdf);
@@ -1521,6 +1536,23 @@ int main(int argc, char **argv) {
         const json context =
             benchmarkContextJson(generated, options, visual_urdf,
                                  collision_urdf, srdf);
+
+        if (options.output_endpoint_paths) {
+            const TrialMetrics metrics =
+                common::makeEndpointPathMetrics(generated, context, problem);
+            const auto endpoint_paths = common::makeEndpointPaths(generated);
+            const std::string basename = outputBasename(generated, options);
+            writePathArtifacts(metrics, generated, problem, endpoint_paths,
+                               options.output_dir, basename, visual_urdf,
+                               collision_urdf, srdf);
+            const std::filesystem::path output_dir(options.output_dir);
+            if (options.metrics_json_path) {
+                writeJson(metrics.toJson(), *options.metrics_json_path, 0);
+            }
+            std::cout << "Wrote synthetic endpoint path artifacts to "
+                      << output_dir << "\n";
+            return 0;
+        }
 
         PlannerBlueprint blueprint =
             common::makePlannerBlueprint(options, g_app_verbose);

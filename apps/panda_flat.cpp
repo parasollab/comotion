@@ -221,6 +221,14 @@ std::string toRepoRelativePath(const std::string &path) {
     std::string p = path;
     while (p.size() >= 3 && p.substr(0, 3) == "../")
         p = p.substr(3);
+    const std::string external_vamp_resources =
+        "external/como-ompl/external/vamp/resources/";
+    if (p.rfind(external_vamp_resources, 0) == 0)
+        return p;
+    const auto external_pos =
+        p.find("/external/como-ompl/external/vamp/resources/");
+    if (external_pos != std::string::npos)
+        return p.substr(external_pos + 1);
     const auto pos = p.find("/resources/");
     if (p.rfind("resources/", 0) == 0)
         return p;
@@ -1338,7 +1346,8 @@ int main(int argc, char **argv) {
             loadScenarioFromDoc(task_doc, options, task_source);
 
         const std::string collision_urdf = resolveResourcePath(options.urdf_rel);
-        const std::string visual_urdf = collision_urdf;
+        const std::string visual_urdf =
+            resolveResourcePath("panda/panda.urdf");
         const std::string srdf = resolveResourcePath(options.srdf_rel);
 
         const auto robots = loadRobots(generated, collision_urdf, srdf);
