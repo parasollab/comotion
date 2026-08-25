@@ -245,30 +245,6 @@ std::string toRepoRelativePath(const std::string &path) {
     return p;
 }
 
-std::string resolvePandaVisualUrdfPath(const std::string &collision_urdf,
-                                       const AppOptions &options) {
-    if (options.urdf_explicit)
-        return collision_urdf;
-
-    const std::filesystem::path rel(
-        "external/como-ompl/external/vamp/resources/panda/"
-        "panda_spherized.urdf");
-    std::vector<std::filesystem::path> candidates;
-    if (!g_executable_dir.empty())
-        candidates.push_back(g_executable_dir / ".." / ".." / rel);
-    candidates.push_back(rel);
-    candidates.push_back(std::filesystem::path("..") / rel);
-    candidates.push_back(std::filesystem::path("..") / ".." / rel);
-
-    for (const auto &candidate : candidates) {
-        const auto normalized = candidate.lexically_normal();
-        std::ifstream file(normalized);
-        if (file.good())
-            return normalized.string();
-    }
-    return collision_urdf;
-}
-
 Eigen::Vector3d vector3FromJson(const json &value) {
     return Eigen::Vector3d(value.at(0).get<double>(), value.at(1).get<double>(),
                            value.at(2).get<double>());
@@ -1472,6 +1448,7 @@ AppOptions parseArgs(int argc, char **argv) {
              comotion::ConflictFindParallelAssignment::PairFirstGreedy ||
          conflict_find_assignment ==
              comotion::ConflictFindParallelAssignment::CyclicCoverGreedy) &&
+        !options.output_endpoint_paths &&
         options.collision_backend !=
             comotion::CollisionChecker::Backend::Vamp) {
         throw std::runtime_error(
@@ -1538,7 +1515,7 @@ int main(int argc, char **argv) {
 
         const std::string collision_urdf = resolveResourcePath(options.urdf_rel);
         const std::string visual_urdf =
-            resolvePandaVisualUrdfPath(collision_urdf, options);
+            resolveResourcePath("panda/panda.urdf");
         const std::string srdf = resolveResourcePath(options.srdf_rel);
 
         const auto robots = loadRobots(generated, collision_urdf, srdf);

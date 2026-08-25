@@ -6,7 +6,7 @@
 import * as THREE from "three";
 import { TrackballControls } from "three/examples/jsm/controls/TrackballControls.js";
 import { parseResult, configAt } from "./schema.js";
-import { createURDFLoader, loadURDFAsync } from "./urdf-loader.js?v=7";
+import { createURDFLoader, loadURDFAsync } from "./urdf-loader.js?v=9";
 
 // Panda 7-DOF joint names (matches planner config order)
 const PANDA_JOINT_NAMES = [
@@ -39,8 +39,8 @@ const CROSS_SECTION_Z = 0;
 const CROSS_SECTION_EPS = 1e-6;
 const PLANAR3_LINK_LENGTH = 0.3;
 const PLANAR3_LINK_RADIUS = 0.05;
-const PANDA_VAMP_VISUAL_URDF_PATH =
-  "external/como-ompl/external/vamp/resources/panda/panda_spherized.urdf";
+const DEFAULT_PANDA_VISUAL_URDF_PATH = "resources/panda/panda.urdf";
+const PANDA_RESOURCE_REVISION = "20260824-real-visual-1";
 
 function scaleRgbHex(hex, k) {
   const r = Math.round(((hex >> 16) & 0xff) * k);
@@ -1208,6 +1208,36 @@ function countUrdfColliderRoots(urdfRobot) {
   return n;
 }
 
+function summarizeUrdfGeometry(urdfRobot) {
+  const visualMeshes = new Set();
+  const collisionMeshes = new Set();
+  urdfRobot.traverse((branch) => {
+    const target = isUrdfVisualNode(branch)
+      ? visualMeshes
+      : isUrdfColliderNode(branch)
+        ? collisionMeshes
+        : null;
+    if (!target) return;
+    branch.traverse((obj) => {
+      if (obj.isMesh) target.add(obj);
+    });
+  });
+
+  const summarize = (meshes) => {
+    let triangles = 0;
+    for (const mesh of meshes) {
+      const drawCount = mesh.geometry?.index?.count ??
+        mesh.geometry?.attributes?.position?.count ?? 0;
+      triangles += Math.floor(drawCount / 3);
+    }
+    return { meshes: meshes.size, triangles };
+  };
+  return {
+    visual: summarize(visualMeshes),
+    collision: summarize(collisionMeshes),
+  };
+}
+
 function applyRobotGeometryModeToScene() {
   const show3D = !showCrossSection2D;
   robotMeshes.forEach(({ mesh, urdfRobot, collisionUrdfRobot }) => {
@@ -1255,7 +1285,9 @@ function applySceneDisplayMode() {
 function syncGeometryToggleButton() {
   const btn = document.getElementById("geometry-toggle");
   if (!btn) return;
-  btn.textContent = showRobotCollisionGeometry ? "Collision geo" : "Visual geo";
+  btn.textContent = showRobotCollisionGeometry
+    ? "Showing collision"
+    : "Showing visual";
   btn.title = showRobotCollisionGeometry
     ? "Showing URDF collision primitives. Click for visual meshes."
     : "Showing URDF visual meshes. Click for collision geometry.";
@@ -1767,19 +1799,18 @@ function isPandaRobot(robot) {
   return type === "panda" || path.includes("/panda/");
 }
 
-function isLocalPandaSpherizedUrdf(path) {
+function isPandaSpherizedUrdf(path) {
   const normalized = String(path || "").replace(/\\/g, "/").toLowerCase();
   return normalized === "panda/panda_spherized.urdf" ||
-    normalized.endsWith("/resources/panda/panda_spherized.urdf") ||
-    normalized === "resources/panda/panda_spherized.urdf";
+    normalized.endsWith("/panda/panda_spherized.urdf");
 }
 
 function robotVisualUrdfCandidates(robot) {
   const path = rawRobotVisualUrdfPath(robot);
   if (!path) return [];
   const candidates =
-    isPandaRobot(robot) && isLocalPandaSpherizedUrdf(path)
-      ? [PANDA_VAMP_VISUAL_URDF_PATH, path]
+    isPandaRobot(robot) && isPandaSpherizedUrdf(path)
+      ? [DEFAULT_PANDA_VISUAL_URDF_PATH, path]
       : [path];
   return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
 }
@@ -1806,7 +1837,13 @@ function robotCollisionUrdfPath(robot) {
 }
 
 function assetUrl(assetBase, path) {
-  return /^https?:\/\//i.test(path) ? path : new URL(path, assetBase).href;
+  const url = /^https?:\/\//i.test(path) ? new URL(path) : new URL(path, assetBase);
+  const normalizedPath = url.pathname.replace(/\\/g, "/").toLowerCase();
+  if (normalizedPath.endsWith("/panda/panda.urdf") ||
+      normalizedPath.endsWith("/panda/panda_spherized.urdf")) {
+    url.searchParams.set("assetRevision", PANDA_RESOURCE_REVISION);
+  }
+  return url.href;
 }
 
 /**
@@ -1857,16 +1894,26 @@ async function waitForUrdfMeshCallbacks(getPending, timeoutMs = 120000) {
  * Load URDF, wait until async mesh files finish populating the tree, then apply robot color.
  * URDFLoader's load() resolves after parse; geometry is added in mesh load callbacks later.
  */
-async function loadUrdfRobotWithSolidColor(assetBase, urdfUrl, colorHex) {
+async function loadUrdfRobotWithSolidColor(assetBase, urdfUrl, colorHex, geometryKind) {
   const loader = createURDFLoader(assetBase, colorHex);
   const getPending =
     typeof loader.getPendingMeshLoads === "function"
       ? () => loader.getPendingMeshLoads()
       : () => 0;
-  const urdfRobot = await loadURDFAsync(loader, urdfUrl);
+  const urdfRobot = await loadURDFAsync(loader, urdfUrl, {
+    parseVisual: geometryKind === "visual",
+    parseCollision: geometryKind === "collision",
+  });
   await waitForUrdfMeshCallbacks(getPending);
   applyRobotSolidColor(urdfRobot, colorHex);
   setUrdfRobotGeometryVisibility(urdfRobot, showRobotCollisionGeometry);
+  const geometrySummary = summarizeUrdfGeometry(urdfRobot);
+  urdfRobot.userData.comotionGeometrySummary = geometrySummary;
+  console.info(
+    "[viewer] Loaded URDF geometry",
+    urdfUrl,
+    JSON.stringify(geometrySummary)
+  );
   return urdfRobot;
 }
 
@@ -1877,7 +1924,12 @@ async function loadFirstUrdfRobotWithSolidColor(assetBase, urdfPaths, colorHex) 
       const urdfUrl = assetUrl(assetBase, urdfPath);
       return {
         urdfPath,
-        urdfRobot: await loadUrdfRobotWithSolidColor(assetBase, urdfUrl, colorHex),
+        urdfRobot: await loadUrdfRobotWithSolidColor(
+          assetBase,
+          urdfUrl,
+          colorHex,
+          "visual"
+        ),
       };
     } catch (err) {
       if (!firstError) firstError = err;
@@ -1932,16 +1984,17 @@ async function loadResult(data) {
           );
         }
         let collisionUrdfRobot = null;
-        if (collisionUrdfPath && collisionUrdfPath !== urdfPath) {
+        if (collisionUrdfPath) {
           try {
             const collisionUrl = assetUrl(assetBase, collisionUrdfPath);
             collisionUrdfRobot = await loadUrdfRobotWithSolidColor(
               assetBase,
               collisionUrl,
-              robotColor
+              robotColor,
+              "collision"
             );
             console.info(
-              "[viewer] Loaded separate collision URDF for",
+              "[viewer] Loaded collision-only geometry for",
               robot.name || robot.robot_type,
               collisionUrdfPath
             );

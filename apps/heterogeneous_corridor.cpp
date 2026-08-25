@@ -1145,7 +1145,8 @@ int main(int argc, char **argv) {
             options.urdf_rel = "panda/panda.urdf";
         }
         const std::string collision_urdf = resolveResourcePath(options.urdf_rel);
-        const std::string visual_urdf = collision_urdf;
+        const std::string visual_urdf =
+            resolveResourcePath("panda/panda.urdf");
         const std::string srdf = resolveResourcePath(options.srdf_rel);
 
         const auto robots = loadRobots(generated, collision_urdf, srdf);

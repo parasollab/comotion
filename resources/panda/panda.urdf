@@ -33,7 +33,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://meshes/collision/link1.obj"/>
+        <mesh filename="package://meshes/visual/link1.obj"/>
       </geometry>
       <material name="panda_white"/>
     </visual>
@@ -60,7 +60,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://meshes/collision/link2.obj"/>
+        <mesh filename="package://meshes/visual/link2.obj"/>
       </geometry>
       <material name="panda_white"/>
     </visual>
@@ -87,7 +87,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://meshes/collision/link3.obj"/>
+        <mesh filename="package://meshes/visual/link3.obj"/>
       </geometry>
       <material name="panda_red">
         <color rgba="1. 1. 1. 1."/>
@@ -115,7 +115,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://meshes/collision/link4.obj"/>
+        <mesh filename="package://meshes/visual/link4.obj"/>
       </geometry>
       <material name="panda_white"/>
     </visual>
@@ -142,7 +142,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://meshes/collision/link5.obj"/>
+        <mesh filename="package://meshes/visual/link5.obj"/>
       </geometry>
       <material name="panda_white"/>
     </visual>
@@ -169,7 +169,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://meshes/collision/link6.obj"/>
+        <mesh filename="package://meshes/visual/link6.obj"/>
       </geometry>
       <material name="panda_white"/>
     </visual>
@@ -241,7 +241,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://meshes/collision/hand.obj"/>
+        <mesh filename="package://meshes/visual/hand.obj"/>
       </geometry>
       <material name="panda_white"/>
     </visual>
@@ -267,7 +267,7 @@
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://meshes/collision/finger.obj"/>
+        <mesh filename="package://meshes/visual/finger.obj"/>
       </geometry>
       <material name="panda_white"/>
     </visual>
@@ -295,7 +295,7 @@
     <visual>
       <origin rpy="0 0 3.14159265359" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="package://meshes/collision/finger.obj"/>
+        <mesh filename="package://meshes/visual/finger.obj"/>
       </geometry>
       <material name="panda_white"/>
     </visual>

@@ -148,10 +148,19 @@ export function createURDFLoader(assetBase, fallbackColorHex = 0x808080) {
   loader.parseCollision = true;
   let pendingMeshLoads = 0;
   let meshBaseUrl = assetBase;
+  let meshAssetRevision = "";
 
   loader.setMeshBaseUrl = (baseUrl) => {
     meshBaseUrl = baseUrl;
     loader.workingPath = baseUrl;
+    // URDFLoader otherwise expands package://meshes/... to /meshes/...
+    // because its default package root is the empty string. Our packaged
+    // URDF resources keep their package directories beside the URDF.
+    loader.packages = baseUrl.replace(/\/$/, "");
+  };
+
+  loader.setMeshAssetRevision = (revision) => {
+    meshAssetRevision = revision || "";
   };
 
   loader.loadMeshCb = function (path, mgr, onComplete) {
@@ -164,7 +173,12 @@ export function createURDFLoader(assetBase, fallbackColorHex = 0x808080) {
       }
     };
 
-    const fullPath = resolveMeshUrl(path, assetBase, meshBaseUrl);
+    let fullPath = resolveMeshUrl(path, assetBase, meshBaseUrl);
+    if (meshAssetRevision) {
+      const revisedUrl = new URL(fullPath);
+      revisedUrl.searchParams.set("assetRevision", meshAssetRevision);
+      fullPath = revisedUrl.href;
+    }
     const pathForExt = fullPath.split("?")[0];
     if (/\.obj$/i.test(pathForExt)) {
       const objLoader = new OBJLoader(mgr);
@@ -223,16 +237,21 @@ export function createURDFLoader(assetBase, fallbackColorHex = 0x808080) {
  * Load URDF from URL and return a promise.
  * @param {URDFLoader} loader
  * @param {string} urdfUrl - Full URL to URDF file
+ * @param {{parseVisual?: boolean, parseCollision?: boolean}} options
  * @returns {Promise<URDFRobot>}
  */
-export function loadURDFAsync(loader, urdfUrl) {
+export function loadURDFAsync(loader, urdfUrl, options = {}) {
   return new Promise((resolve, reject) => {
-    loader.parseVisual = true;
-    loader.parseCollision = true;
+    loader.parseVisual = options.parseVisual ?? true;
+    loader.parseCollision = options.parseCollision ?? true;
     const urdfBase = new URL("./", urdfUrl).href;
+    const assetRevision = new URL(urdfUrl).searchParams.get("assetRevision") || "";
     loader.workingPath = urdfBase;
     if (typeof loader.setMeshBaseUrl === "function") {
       loader.setMeshBaseUrl(urdfBase);
+    }
+    if (typeof loader.setMeshAssetRevision === "function") {
+      loader.setMeshAssetRevision(assetRevision);
     }
     loader.load(urdfUrl, resolve, undefined, reject);
   });
