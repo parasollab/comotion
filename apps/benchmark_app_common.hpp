@@ -702,10 +702,30 @@ inline json pathConfigsJson(const comotion::Path &path) {
     return configs;
 }
 
+inline comotion::Path densePathForExport(const comotion::Path &path,
+                                         std::size_t resolution,
+                                         double vmax) {
+    comotion::Path dense = path;
+    if (dense.has_explicit_timesteps())
+        dense.interpolate_to_timesteps(resolution, vmax);
+    return dense;
+}
+
+inline std::vector<comotion::Path> densePathsForExport(
+    const std::vector<comotion::Path> &paths, std::size_t resolution,
+    double vmax) {
+    std::vector<comotion::Path> dense_paths;
+    dense_paths.reserve(paths.size());
+    for (const auto &path : paths)
+        dense_paths.push_back(densePathForExport(path, resolution, vmax));
+    return dense_paths;
+}
+
 inline void appendArcVisualization(
     json &result,
     const std::shared_ptr<comotion::MultiRobotPlanner> &planner,
-    bool output_paths, bool track_arc_history) {
+    bool output_paths, bool track_arc_history,
+    std::size_t resolution, double vmax) {
     if (!arcHistoryRequested(output_paths, track_arc_history))
         return;
     const auto arc = std::dynamic_pointer_cast<comotion::ARC>(planner);
@@ -734,8 +754,10 @@ inline void appendArcVisualization(
         };
         std::size_t timesteps = 0;
         for (const auto &path : iteration.paths) {
-            iteration_json["paths"].push_back(pathConfigsJson(path));
-            timesteps = std::max(timesteps, path.size());
+            const auto dense_path =
+                densePathForExport(path, resolution, vmax);
+            iteration_json["paths"].push_back(pathConfigsJson(dense_path));
+            timesteps = std::max(timesteps, dense_path.size());
         }
         iteration_json["timesteps"] = timesteps;
 
@@ -760,8 +782,11 @@ inline void appendArcVisualization(
                 {"window_end_t", repair.window_end_t},
                 {"paths", json::array()},
             };
-            for (const auto &path : repair.local_paths)
-                repair_json["paths"].push_back(pathConfigsJson(path));
+            for (const auto &path : repair.local_paths) {
+                const auto dense_path =
+                    densePathForExport(path, resolution, vmax);
+                repair_json["paths"].push_back(pathConfigsJson(dense_path));
+            }
             iteration_json["repairs"].push_back(std::move(repair_json));
         }
 

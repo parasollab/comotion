@@ -99,10 +99,31 @@ int main() {
     ok &= arc->visualizationTraceEnabled();
 
     nlohmann::json artifact = nlohmann::json::object();
-    common::appendArcVisualization(artifact, arc, true, false);
+    common::appendArcVisualization(artifact, arc, true, false, 128, 1.0);
     ok &= !artifact.contains("arc_visualization");
-    common::appendArcVisualization(artifact, arc, false, true);
+    common::appendArcVisualization(artifact, arc, false, true, 128, 1.0);
     ok &= !artifact.contains("arc_visualization");
+
+    comotion::Path sparse_path;
+    sparse_path.push_back({0.0});
+    sparse_path.push_back({2.0});
+    sparse_path.push_back({4.0});
+    sparse_path.set_waypoint_timesteps({0, 2, 4});
+    const auto dense_path =
+        common::densePathForExport(sparse_path, 128, 1.0);
+    ok &= dense_path.size() == 5;
+    ok &= dense_path.has_implicit_dense_timesteps();
+    ok &= dense_path[1][0] == 1.0;
+    ok &= dense_path[3][0] == 3.0;
+    ok &= sparse_path.size() == 3;
+    ok &= sparse_path.has_explicit_timesteps();
+
+    comotion::Path index_timed_path;
+    index_timed_path.push_back({0.0});
+    index_timed_path.push_back({1.0});
+    const auto unchanged_path =
+        common::densePathForExport(index_timed_path, 128, 1.0);
+    ok &= unchanged_path.size() == index_timed_path.size();
 
     Options options;
     ok &= expectNoThrow("ARC with unrelated invalid options", [&]() {

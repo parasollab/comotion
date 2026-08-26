@@ -748,10 +748,12 @@ void writePathArtifacts(const TrialMetrics &metrics,
     std::filesystem::create_directories(output_dir);
 
     auto robot_models = problem->robotModelPtrs();
+    const auto export_paths = common::densePathsForExport(
+        paths, problem->resolution(), problem->vmax());
     comotion::CompositePathValidationOptions validation_options;
     validation_options.check_environment = true;
     auto conflict = problem->collisionChecker().findFirstCompositePathConflict(
-        paths, robot_models, validation_options);
+        export_paths, robot_models, validation_options);
 
     json out;
     out["schema_version"] = "1.0";
@@ -786,8 +788,8 @@ void writePathArtifacts(const TrialMetrics &metrics,
     std::size_t timesteps = 0;
     double total_path_cost = 0.0;
     const auto &robots = problem->robots();
-    for (std::size_t r = 0; r < paths.size(); ++r) {
-        const auto &path = paths[r];
+    for (std::size_t r = 0; r < export_paths.size(); ++r) {
+        const auto &path = export_paths[r];
         timesteps = std::max(timesteps, path.size());
         total_path_cost += path.path_cost();
 
@@ -828,7 +830,8 @@ void writePathArtifacts(const TrialMetrics &metrics,
     out["timesteps"] = timesteps;
     out["total_path_cost"] = total_path_cost;
     common::appendArcVisualization(out, planner, output_paths,
-                                   track_arc_history);
+                                   track_arc_history, problem->resolution(),
+                                   problem->vmax());
 
     writeJson(out,
               output_dir / (basename + "_" + metrics.planner + "_result.json"),
