@@ -2,15 +2,12 @@
 
 CoMotion provides:
 
-- final P-ARC paper reproduction runners for 2D and Panda Cage scenarios;
-- P-ARC conflict-detection and optimistic-batching ablations;
 - method-based VA-MRMP comparisons using VAMP, sphere, and FCL collision
   backends;
-- smaller feasibility, anytime, and multi-core experiments;
-- JSON-defined planner parameter sweeps.
+- final P-ARC paper reproduction runners for 2D and Panda Cage scenarios;
+- P-ARC conflict-detection and optimistic-batching ablations;
+- smaller feasibility, anytime, and multi-core experiments
 
-The public release does not include the separate validation-primitive
-trace/replay experiment or its corpus-generation tools.
 
 ## Requirements
 
@@ -27,6 +24,34 @@ cmake --build build
 
 Run commands from the repository root. Use `--help` on any runner for its full
 set of cases and options.
+
+## VA-MRMP Method Comparisons
+
+The planner-trial runner supports `panda_cage`, `flying_spheres`, and
+`heterogeneous_corridor` with VAMP, sphere, and FCL collision backends.
+
+Preview the complete default matrix:
+
+```bash
+python3 benchmarks/scripts/run_planner_trials.py \
+  --backends vamp,sphere,fcl \
+  --dry-run
+```
+
+Run it with eight concurrent top-level trials:
+
+```bash
+python3 benchmarks/scripts/run_planner_trials.py \
+  --scenarios default \
+  --methods default \
+  --backends vamp,sphere,fcl \
+  --cores 8 \
+  --output-root benchmarks/results/va_mrmp
+```
+
+The runner uses `benchmarks/configs/planner_trial_params.json` and prunes a
+method/backend/task combination at larger team sizes after it fails every trial
+at a smaller size. Reuse the same `--output-root` to resume compatible trials.
 
 ## P-ARC Paper Reproduction
 
@@ -71,34 +96,6 @@ python3 benchmarks/scripts/run_parallel_arc_optimistic_ablation.py \
 
 Use `--allow-nonpaper-matrix` only for smaller diagnostic runs.
 
-## VA-MRMP Method Comparisons
-
-The planner-trial runner supports `panda_cage`, `flying_spheres`, and
-`heterogeneous_corridor` with VAMP, sphere, and FCL collision backends.
-
-Preview the complete default matrix:
-
-```bash
-python3 benchmarks/scripts/run_planner_trials.py \
-  --backends vamp,sphere,fcl \
-  --dry-run
-```
-
-Run it with eight concurrent top-level trials:
-
-```bash
-python3 benchmarks/scripts/run_planner_trials.py \
-  --scenarios default \
-  --methods default \
-  --backends vamp,sphere,fcl \
-  --cores 8 \
-  --output-root benchmarks/results/va_mrmp
-```
-
-The runner uses `benchmarks/configs/planner_trial_params.json` and prunes a
-method/backend/task combination at larger team sizes after it fails every trial
-at a smaller size. Reuse the same `--output-root` to resume compatible trials.
-
 Use the P-ARC runners above, not `run_planner_trials.py`, for final P-ARC paper
 reproduction.
 
@@ -132,15 +129,6 @@ python3 benchmarks/scripts/run_multicore.py \
   --worker-counts 2,4 \
   --num-seeds 5 \
   --time-limit 60
-```
-
-Preview a parameter sweep:
-
-```bash
-python3 benchmarks/scripts/run_param_sweep.py \
-  --config benchmarks/configs/heterogenous_param_sweep.json \
-  --cores 8 \
-  --dry-run
 ```
 
 ## Results

@@ -14,8 +14,7 @@ Run these checks from a fresh clone before publishing a release:
    generated results, local absolute paths, and unexpectedly large blobs.
 8. Confirm `LICENSE`, `THIRD_PARTY_NOTICES.md`, `LICENSES/`, and `CITATION.cff`
    match the released contents and version.
-9. Confirm the release commit uses the intended public author identity: James
-   D. Motes `<jamesmotes@users.noreply.github.com>`.
+9. Confirm the release commit uses the intended public author identity.
 10. After the release commit passes every check, create and push the annotated
     `v0.1.0` tag from that exact commit.
 
