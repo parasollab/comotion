@@ -75,6 +75,10 @@ inline constexpr std::uint64_t kPlanningSeedDomainParallelArcRepair =
     0x504152435f525052ULL; // "PARC_RPR"
 inline constexpr std::uint64_t kPlanningSeedDomainParallelArcAttempt =
     0x504152435f415454ULL; // "PARC_ATT"
+inline constexpr std::uint64_t kPlanningSeedDomainScheduleArcInitial =
+    0x534152435f494e49ULL; // "SARC_INI"
+inline constexpr std::uint64_t kPlanningSeedDomainScheduleArcRepair =
+    0x534152435f525052ULL; // "SARC_RPR"
 inline constexpr std::uint64_t kPlanningSeedDomainStrrtStateSampler =
     0x53545252545f5354ULL; // "STRRT_ST"
 inline constexpr std::uint64_t kPlanningSeedDomainStrrtTimeSampler =
@@ -124,6 +128,19 @@ inline std::uint32_t parallelArcRepairAttemptPlanningSeed(
     return derivePlanningSeed(repair_seed,
                               kPlanningSeedDomainParallelArcAttempt,
                               attempt_index);
+}
+
+inline std::uint32_t scheduleArcInitialPlanningSeed(
+    std::uint32_t parent_seed, std::uint64_t motion_index) {
+    return derivePlanningSeed(parent_seed, kPlanningSeedDomainScheduleArcInitial,
+                              motion_index);
+}
+
+inline std::uint32_t scheduleArcRepairPlanningSeed(
+    std::uint32_t parent_seed, std::uint64_t repair_index,
+    std::uint64_t attempt_index) {
+    return derivePlanningSeed(parent_seed, kPlanningSeedDomainScheduleArcRepair,
+                              repair_index, attempt_index);
 }
 
 inline std::uint_fast32_t compositeRrtStateSamplerSeed(

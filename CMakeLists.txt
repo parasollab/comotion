@@ -105,6 +105,11 @@ if(COMOTION_BUILD_TESTS)
     target_link_libraries(path_timestep_semantics PRIVATE comotion)
     add_test(NAME path_timestep_semantics COMMAND path_timestep_semantics)
 
+    add_executable(schedule_arc_regression
+        tests/schedule_arc_regression.cpp)
+    target_link_libraries(schedule_arc_regression PRIVATE comotion)
+    add_test(NAME schedule_arc_regression COMMAND schedule_arc_regression)
+
     add_executable(mobile_robot_2d_crossing_geometry
         benchmarks/tests/mobile_robot_2d_crossing_geometry.cpp)
     target_include_directories(mobile_robot_2d_crossing_geometry PRIVATE

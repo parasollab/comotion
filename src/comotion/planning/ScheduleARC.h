@@ -1,10 +1,11 @@
 #pragma once
 
 #include "comotion/collision/ObstacleShapes.h"
-#include "comotion/planning/MultiRobotPlanner.h"
+#include "comotion/planning/ARC.h"
 #include "comotion/planning/Path.h"
 #include "comotion/robot/RobotModel.h"
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <limits>
@@ -18,6 +19,7 @@ namespace comotion {
 enum class ScheduleArcConflictType {
     MovingCollision,
     StationaryCollision,
+    EnvironmentCollision,
 };
 
 struct ScheduleArcMotion {
@@ -64,8 +66,12 @@ std::string describeScheduleArcConflict(const ScheduleArcConflict &conflict);
 /// only compare motions that are active at a timestep and skip motions from the
 /// same coupling, assuming those local coupled plans are already internally
 /// valid. Stationary conflicts are repaired by adding the stationary entity as
-/// a static obstacle to the local subproblem.
-class ScheduleARC : public MultiRobotPlanner {
+/// a static obstacle to the local subproblem. Supplied sparse paths are sampled
+/// using Path timestep metadata and normalized to the fixed schedule interval.
+/// Repairs retain coupled teams and use the current ARC repair engine and its
+/// inherited expansion, local-solver, bounds, simplification, tracing, seed,
+/// and cancellation settings.
+class ScheduleARC : public ARC {
 public:
     using FailureCallback =
         std::function<void(const ScheduleArcConflict &)>;
@@ -87,10 +93,17 @@ public:
         failure_callback_ = std::move(callback);
     }
 
-    void setInitialWindow(std::size_t window) { initial_window_ = window; }
-    void setExpansionStep(std::size_t step) { expansion_step_ = step; }
+    using ARC::setExpansionStep;
+    using ARC::setInitialWindow;
+    void setInitialWindow(std::size_t window) {
+        ARC::setInitialWindow(static_cast<int>(std::min<std::size_t>(
+            window, static_cast<std::size_t>(std::numeric_limits<int>::max()))));
+    }
+    /// Optional compatibility cap for an individual schedule-window attempt.
+    /// A non-positive value (the default) gives the current ARC engine the full
+    /// remaining global budget.
     void setLocalSolveTimeLimit(double seconds) {
-        local_solve_time_limit_ = seconds;
+        local_solve_time_limit_ = seconds > 0.0 ? seconds : 0.0;
     }
 
     std::optional<ScheduleArcConflict> findFirstConflict() const;
@@ -105,11 +118,14 @@ private:
                                  std::size_t timestep);
     static bool intervalOverlaps(std::size_t a_begin, std::size_t a_end,
                                  std::size_t b_begin, std::size_t b_end);
-    static const std::vector<double> &
+    static std::vector<double>
     configAt(const ScheduleArcMotion &motion, std::size_t timestep);
     static Path resamplePath(const Path &path, std::size_t waypoint_count);
+    static void normalizeMotionPath(ScheduleArcMotion &motion);
     static bool hasEntity(const std::vector<std::string> &entities,
                           const std::string &entity);
+    std::optional<ScheduleArcConflict> findFirstConflict(
+        const std::function<bool()> &stop_requested, bool *stopped) const;
 
     bool shouldSkipMovingPair(const ScheduleArcMotion &lhs,
                               const ScheduleArcMotion &rhs) const;
@@ -117,6 +133,11 @@ private:
                                     const std::string &entity) const;
     std::vector<std::size_t>
     motionsForConflict(const ScheduleArcConflict &conflict) const;
+    std::vector<std::size_t> expandMotionTeamForWindow(
+        std::vector<std::size_t> motion_indices, std::size_t conflict_timestep,
+        std::size_t begin_t, std::size_t end_t) const;
+    bool motionsAreCoupled(const ScheduleArcMotion &lhs,
+                           const ScheduleArcMotion &rhs) const;
     std::optional<RepairWindow>
     initialRepairWindow(const ScheduleArcConflict &conflict,
                         const std::vector<std::size_t> &motion_indices) const;
@@ -129,13 +150,16 @@ private:
                                  const std::vector<std::size_t> &motion_indices)
         const;
 
-    bool planMissingMotionPath(ScheduleArcMotion &motion, double time_limit);
+    bool planMissingMotionPath(ScheduleArcMotion &motion, double time_limit,
+                               std::uint32_t motion_seed);
     bool repairConflict(const ScheduleArcConflict &conflict,
                         const std::chrono::steady_clock::time_point &start,
                         double time_limit);
     bool solveWindow(const std::vector<std::size_t> &motion_indices,
                      const RepairWindow &window, double time_limit,
-                     std::vector<Path> &local_paths) const;
+                     std::uint32_t attempt_seed,
+                     std::vector<Path> &local_paths, bool &start_valid,
+                     bool &goal_valid, nlohmann::json &local_stats) const;
     void spliceWindow(const std::vector<std::size_t> &motion_indices,
                       const RepairWindow &window,
                       const std::vector<Path> &local_paths);
@@ -143,18 +167,28 @@ private:
     void updateMetrics();
     void updateStats(bool solved);
 
+    struct AppliedRepair {
+        std::vector<std::size_t> motions;
+        std::size_t begin_t = 0;
+        std::size_t end_t = 0;
+    };
+
     std::vector<ScheduleArcMotion> motions_;
     std::vector<ScheduleArcStationaryEntity> stationary_entities_;
     FailureCallback failure_callback_;
-    std::size_t initial_window_ = 20;
-    std::size_t expansion_step_ = 20;
-    double local_solve_time_limit_ = 2.0;
+    double local_solve_time_limit_ = 0.0;
     std::uint64_t conflicts_seen_ = 0;
     std::uint64_t moving_conflicts_seen_ = 0;
     std::uint64_t stationary_conflicts_seen_ = 0;
+    std::uint64_t environment_conflicts_seen_ = 0;
     std::uint64_t repair_attempts_ = 0;
     std::uint64_t repair_successes_ = 0;
     std::uint64_t temporal_expansions_ = 0;
+    std::uint64_t initial_valid_temporal_expansions_ = 0;
+    std::uint64_t main_temporal_expansions_ = 0;
+    std::size_t max_repair_team_size_ = 0;
+    std::vector<AppliedRepair> applied_repairs_;
+    nlohmann::json schedule_repair_attempt_events_ = nlohmann::json::array();
 };
 
 } // namespace comotion
