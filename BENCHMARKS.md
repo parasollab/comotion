@@ -99,6 +99,35 @@ Use `--allow-nonpaper-matrix` only for smaller diagnostic runs.
 Use the P-ARC runners above, not `run_planner_trials.py`, for final P-ARC paper
 reproduction.
 
+## AO-ARC Paper Reproduction
+
+Preview the complete experiment matrix from *AO-ARC: Almost-Surely
+Asymptotically Optimal Multi-Robot Motion Planning with ARC*:
+
+```bash
+python3 benchmarks/scripts/run_ao_arc_paper.py --dry-run
+```
+
+Run the paper profile:
+
+```bash
+python3 benchmarks/scripts/run_ao_arc_paper.py \
+  --keep-metrics-json \
+  --jobs 1
+```
+
+The default profile contains all six methods (ARC, AO-ARC, CompRRTC,
+CompAORRTC, dRRT*, and PP-ST-RRT*), the Mobile Cross, Mobile Circle, and
+Planar Manipulator scenarios with 4, 8, and 16 robots, and Panda Cage with 4
+and 8 robots over five fixed tasks. Each configuration uses ten planning seeds,
+with 300-second 2D and 600-second Panda limits (1,140 total trials).
+
+The Panda task-generation seed is fixed independently of the planning seed so
+each method and trial sees the same five tasks. PP-ST-RRT* uses one randomized
+priority order per trial, k-nearest rewiring, and divides the total budget among
+the remaining single-robot solves. Outputs currently report raw costs; empirical
+`J_hat` normalization and values derived from it are intentionally omitted.
+
 ## Smaller Experiments
 
 Run feasibility comparisons:

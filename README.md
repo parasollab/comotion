@@ -230,6 +230,9 @@ python3 benchmarks/scripts/run_feasibility.py --num-seeds 5
 # Run anytime ARC, AO-ARC, and Composite AORRTC comparisons over five seeds.
 python3 benchmarks/scripts/run_anytime.py --num-seeds 5
 
+# Preview all 1,140 trials in the complete AO-ARC paper experiment profile.
+python3 benchmarks/scripts/run_ao_arc_paper.py --dry-run
+
 # Compare ARC and ParallelARC worker scaling over five seeds.
 python3 benchmarks/scripts/run_multicore.py --num-seeds 5
 

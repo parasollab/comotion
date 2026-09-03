@@ -1,4 +1,5 @@
 #include "comotion/planning/AOARC.h"
+#include "comotion/planning/PlanningSeed.h"
 
 #include <nlohmann/json.hpp>
 
@@ -81,6 +82,8 @@ ompl::base::PlannerStatus AOARC::solve(double timeLimit) {
         nlohmann::json stats = nlohmann::json::object();
         stats["solution_events"] = nlohmann::json::array();
         stats["first_solution_status"] = first_status.asString();
+        stats["initial_attempt_seed"] = planning_seed_;
+        stats["bounded_attempt_seeds"] = nlohmann::json::array();
         setPlannerStatsJson(std::move(stats));
         return first_status;
     }
@@ -108,6 +111,7 @@ ompl::base::PlannerStatus AOARC::solve(double timeLimit) {
     std::uint64_t num_attempts = 0;
     std::uint64_t num_improvements = 0;
     std::uint64_t num_rejections = 0;
+    std::vector<std::uint32_t> bounded_attempt_seeds;
     std::string stop_reason = "time_budget_exhausted";
     constexpr double kAttemptSafetyMarginSeconds = 0.05;
 
@@ -121,6 +125,10 @@ ompl::base::PlannerStatus AOARC::solve(double timeLimit) {
 
         ARC attempt;
         configureArcAttempt(attempt);
+        const auto attempt_seed =
+            aoArcBoundedAttemptPlanningSeed(planning_seed_, num_attempts);
+        attempt.setPlanningSeed(attempt_seed);
+        bounded_attempt_seeds.push_back(attempt_seed);
         attempt.setGlobalMakespanBoundTimesteps(best_makespan);
         const auto status = attempt.solve(attempt_budget);
         ++num_attempts;
@@ -160,6 +168,8 @@ ompl::base::PlannerStatus AOARC::solve(double timeLimit) {
     stats["num_bounded_attempts"] = num_attempts;
     stats["num_improvements"] = num_improvements;
     stats["num_rejections"] = num_rejections;
+    stats["initial_attempt_seed"] = planning_seed_;
+    stats["bounded_attempt_seeds"] = bounded_attempt_seeds;
     stats["ao_stop_reason"] = stop_reason;
     setPlannerStatsJson(std::move(stats));
 

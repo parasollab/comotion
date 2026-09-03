@@ -299,6 +299,7 @@ install(PROGRAMS
     benchmarks/scripts/benchmark_runner_common.py
     benchmarks/scripts/run_feasibility.py
     benchmarks/scripts/run_anytime.py
+    benchmarks/scripts/run_ao_arc_paper.py
     benchmarks/scripts/run_multicore.py
     benchmarks/scripts/run_parallel_arc_2d.py
     benchmarks/scripts/run_parallel_arc_panda.py

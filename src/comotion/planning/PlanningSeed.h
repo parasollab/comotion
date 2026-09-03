@@ -91,6 +91,8 @@ inline constexpr std::uint64_t kPlanningSeedDomainAorrtcCompositeBounded =
     0x414f525f43424e44ULL; // "AOR_CBND"
 inline constexpr std::uint64_t kPlanningSeedDomainAorrtcCompositeAnytime =
     0x414f525f43414e59ULL; // "AOR_CANY"
+inline constexpr std::uint64_t kPlanningSeedDomainAoArcBoundedAttempt =
+    0x414f4152435f4154ULL; // "AOARC_AT"
 
 inline std::uint32_t arcRepairAttemptPlanningSeed(
     std::uint32_t parent_seed, std::uint64_t repair_id,
@@ -123,6 +125,16 @@ inline std::uint32_t parallelArcRepairAttemptPlanningSeed(
         task_index);
     return derivePlanningSeed(repair_seed,
                               kPlanningSeedDomainParallelArcAttempt,
+                              attempt_index);
+}
+
+/// Root seed for one bounded AO-ARC invocation of ARC. Attempt indices are
+/// logical (rather than timing-derived), so rerunning a trial remains
+/// reproducible while every bounded attempt receives a fresh random stream.
+inline std::uint32_t aoArcBoundedAttemptPlanningSeed(
+    std::uint32_t parent_seed, std::uint64_t attempt_index) {
+    return derivePlanningSeed(parent_seed,
+                              kPlanningSeedDomainAoArcBoundedAttempt,
                               attempt_index);
 }
 

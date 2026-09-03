@@ -306,6 +306,28 @@ bool testParallelArcRepairSeedHierarchy() {
                                                            5));
 }
 
+bool testAoArcBoundedAttemptSeedHierarchy() {
+    constexpr std::uint32_t kParentSeed = 29;
+    std::set<std::uint32_t> seeds;
+    for (std::uint64_t attempt = 0; attempt < 1024; ++attempt) {
+        const auto seed = comotion::aoArcBoundedAttemptPlanningSeed(
+            kParentSeed, attempt);
+        seeds.insert(seed);
+        if (!expectTrue(
+                "AO-ARC bounded-attempt seed is deterministic",
+                seed == comotion::aoArcBoundedAttemptPlanningSeed(
+                            kParentSeed, attempt))) {
+            return false;
+        }
+    }
+    return expectTrue("1024 AO-ARC bounded attempts have unique seeds",
+                      seeds.size() == 1024) &&
+           expectTrue(
+               "AO-ARC bounded attempt does not reuse the initial seed",
+               comotion::aoArcBoundedAttemptPlanningSeed(kParentSeed, 0) !=
+                   kParentSeed);
+}
+
 } // namespace
 
 int main() {
@@ -314,6 +336,8 @@ int main() {
     if (!testRepairAttemptSeedHierarchy())
         return 1;
     if (!testParallelArcRepairSeedHierarchy())
+        return 1;
+    if (!testAoArcBoundedAttemptSeedHierarchy())
         return 1;
     std::cout << "composite_rrt_seed_regression: OK\n";
     return 0;

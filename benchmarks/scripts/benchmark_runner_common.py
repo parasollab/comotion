@@ -1166,6 +1166,7 @@ def run_trials(
     *,
     jobs: int,
     timeout_seconds: float | None,
+    timeout_grace_seconds: float | None = None,
     keep_metrics_json: bool = False,
     result_csv_path: Path | None = None,
     event_csv_path: Path | None = None,
@@ -1173,6 +1174,17 @@ def run_trials(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     if jobs < 1:
         raise RuntimeError("--jobs must be at least 1")
+    if timeout_seconds is not None and timeout_grace_seconds is not None:
+        raise RuntimeError(
+            "Specify either timeout_seconds or timeout_grace_seconds, not both"
+        )
+    if timeout_grace_seconds is not None and timeout_grace_seconds < 0.0:
+        raise RuntimeError("timeout_grace_seconds must be non-negative")
+
+    def timeout_for_spec(spec: TrialSpec) -> float | None:
+        if timeout_grace_seconds is None:
+            return timeout_seconds
+        return spec.time_limit + timeout_grace_seconds
 
     if not skip_existing:
         if result_csv_path is not None:
@@ -1264,7 +1276,7 @@ def run_trials(
             )
             row, rows = run_trial(
                 spec,
-                timeout_seconds,
+                timeout_for_spec(spec),
                 keep_metrics_json=keep_metrics_json,
             )
             record_finished_trial(row, rows)
@@ -1277,7 +1289,7 @@ def run_trials(
             pool.submit(
                 run_trial,
                 spec,
-                timeout_seconds,
+                timeout_for_spec(spec),
                 keep_metrics_json=keep_metrics_json,
             ): spec
             for spec in pending_specs
@@ -1412,6 +1424,7 @@ def write_manifest(
     cases: Sequence[BenchmarkCase],
     variants: Sequence[PlannerVariant],
     trial_count: int,
+    settings: dict[str, Any] | None = None,
 ) -> None:
     manifest = {
         "schema": "comotion.benchmark_manifest.v1",
@@ -1438,6 +1451,8 @@ def write_manifest(
             for variant in variants
         ],
     }
+    if settings is not None:
+        manifest["settings"] = settings
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
