@@ -180,6 +180,12 @@ if(COMOTION_BUILD_TESTS)
     add_test(NAME aorrtc_makespan_regression
              COMMAND aorrtc_makespan_regression)
 
+    add_executable(ao_arc_selective_regression
+        tests/ao_arc_selective_regression.cpp)
+    target_link_libraries(ao_arc_selective_regression PRIVATE comotion)
+    add_test(NAME ao_arc_selective_regression
+             COMMAND ao_arc_selective_regression)
+
     add_executable(find_conflict_pairs_regression
         tests/find_conflict_pairs_regression.cpp)
     target_link_libraries(find_conflict_pairs_regression PRIVATE comotion)

@@ -85,6 +85,19 @@ bool expectThrow(const std::string &label,
 int main() {
     bool ok = true;
 
+    ok &= common::parseNonnegativeSizeValue("0", "depth") == 0;
+    ok &= common::parseNonnegativeSizeValue("2", "depth") == 2;
+    ok &= expectThrow("negative repair-history depth", [&]() {
+        common::parseNonnegativeSizeValue("-1", "depth");
+    });
+    ok &= common::parseProbabilityValue("0.25", "probability") == 0.25;
+    ok &= expectThrow("restart probability above one", [&]() {
+        common::parseProbabilityValue("1.01", "probability");
+    });
+    ok &= expectThrow("nonfinite restart probability", [&]() {
+        common::parseProbabilityValue("nan", "probability");
+    });
+
     ok &= !common::arcHistoryRequested(false, false);
     ok &= !common::arcHistoryRequested(true, false);
     ok &= !common::arcHistoryRequested(false, true);

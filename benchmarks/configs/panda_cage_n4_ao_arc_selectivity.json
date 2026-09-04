@@ -1,0 +1,264 @@
+{
+  "schema": "comotion.parameter_sweep.v1",
+  "description": "Paired 2x2 ablation of AO-ARC selective bounded replanning and selective initial conflict scanning on all five Panda Cage n=4 tasks.",
+  "defaults": {
+    "collision_backend": "vamp",
+    "resolution": 128,
+    "trials_per_param_set": 3,
+    "methods": [
+      "ao_arc"
+    ],
+    "base_params": {
+      "vamp_validation_strategy": "combined_rake",
+      "arc_initial_window": 20,
+      "arc_expansion_step": 1.05,
+      "arc_expansion_policy": "exponential",
+      "arc_initial_valid_expansion_policy": "linear",
+      "arc_initial_valid_expansion_step": 20,
+      "arc_initial_valid_expansion_symmetric": false,
+      "arc_local_composite_max_samples": 250000,
+      "arc_local_composite_use_makespan_metric": true,
+      "arc_local_solvers": "composite",
+      "arc_simplify_initial_solutions": true,
+      "arc_simplify_conflict_solutions": false,
+      "ao_arc_local_bound_epsilon_timesteps": 1
+    }
+  },
+  "apps": {
+    "panda_cage_n4_task0": {
+      "title": "Panda Cage n=4, task 0",
+      "executable": "panda_cage",
+      "args": [
+        "--num-robots",
+        "4",
+        "--task-index",
+        "0",
+        "--task-generation-seed",
+        "0"
+      ],
+      "time_limit": 30.0,
+      "param_grid": {
+        "ao_arc": {
+          "sets": [
+            {
+              "name": "replan_on_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_on_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            },
+            {
+              "name": "replan_off_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_off_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            }
+          ]
+        }
+      }
+    },
+    "panda_cage_n4_task1": {
+      "title": "Panda Cage n=4, task 1",
+      "executable": "panda_cage",
+      "args": [
+        "--num-robots",
+        "4",
+        "--task-index",
+        "1",
+        "--task-generation-seed",
+        "0"
+      ],
+      "time_limit": 30.0,
+      "param_grid": {
+        "ao_arc": {
+          "sets": [
+            {
+              "name": "replan_on_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_on_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            },
+            {
+              "name": "replan_off_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_off_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            }
+          ]
+        }
+      }
+    },
+    "panda_cage_n4_task2": {
+      "title": "Panda Cage n=4, task 2",
+      "executable": "panda_cage",
+      "args": [
+        "--num-robots",
+        "4",
+        "--task-index",
+        "2",
+        "--task-generation-seed",
+        "0"
+      ],
+      "time_limit": 30.0,
+      "param_grid": {
+        "ao_arc": {
+          "sets": [
+            {
+              "name": "replan_on_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_on_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            },
+            {
+              "name": "replan_off_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_off_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            }
+          ]
+        }
+      }
+    },
+    "panda_cage_n4_task3": {
+      "title": "Panda Cage n=4, task 3",
+      "executable": "panda_cage",
+      "args": [
+        "--num-robots",
+        "4",
+        "--task-index",
+        "3",
+        "--task-generation-seed",
+        "0"
+      ],
+      "time_limit": 30.0,
+      "param_grid": {
+        "ao_arc": {
+          "sets": [
+            {
+              "name": "replan_on_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_on_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            },
+            {
+              "name": "replan_off_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_off_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            }
+          ]
+        }
+      }
+    },
+    "panda_cage_n4_task4": {
+      "title": "Panda Cage n=4, task 4",
+      "executable": "panda_cage",
+      "args": [
+        "--num-robots",
+        "4",
+        "--task-index",
+        "4",
+        "--task-generation-seed",
+        "0"
+      ],
+      "time_limit": 30.0,
+      "param_grid": {
+        "ao_arc": {
+          "sets": [
+            {
+              "name": "replan_on_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_on_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": true,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            },
+            {
+              "name": "replan_off_scan_on",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": true
+              }
+            },
+            {
+              "name": "replan_off_scan_off",
+              "params": {
+                "ao_arc_selective_replanning": false,
+                "ao_arc_selective_initial_conflict_scan": false
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

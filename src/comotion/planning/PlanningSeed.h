@@ -93,6 +93,10 @@ inline constexpr std::uint64_t kPlanningSeedDomainAorrtcCompositeAnytime =
     0x414f525f43414e59ULL; // "AOR_CANY"
 inline constexpr std::uint64_t kPlanningSeedDomainAoArcBoundedAttempt =
     0x414f4152435f4154ULL; // "AOARC_AT"
+inline constexpr std::uint64_t kPlanningSeedDomainAoArcRandomRestart =
+    0x414f4152435f5252ULL; // "AOARC_RR"
+inline constexpr std::uint64_t kPlanningSeedDomainArcInitialIndividual =
+    0x4152435f494e4456ULL; // "ARC_INDV"
 
 inline std::uint32_t arcRepairAttemptPlanningSeed(
     std::uint32_t parent_seed, std::uint64_t repair_id,
@@ -136,6 +140,27 @@ inline std::uint32_t aoArcBoundedAttemptPlanningSeed(
     return derivePlanningSeed(parent_seed,
                               kPlanningSeedDomainAoArcBoundedAttempt,
                               attempt_index);
+}
+
+/// Replayable random word for deciding whether one bounded AO-ARC invocation
+/// should discard all incumbent paths. This stream is independent of the
+/// bounded planner's own random stream, so enabling the decision does not
+/// perturb selective attempts that do not restart.
+inline std::uint32_t aoArcRandomRestartDecisionWord(
+    std::uint32_t parent_seed, std::uint64_t attempt_index) {
+    return derivePlanningSeed(parent_seed,
+                              kPlanningSeedDomainAoArcRandomRestart,
+                              attempt_index);
+}
+
+/// Root seed for one robot's initial bounded query in ARC. Robot identity is
+/// used instead of planning order so selective and full replanning generate
+/// the same random stream for a given robot within an AO-ARC attempt.
+inline std::uint32_t arcInitialIndividualPlanningSeed(
+    std::uint32_t parent_seed, int robot_index) {
+    return derivePlanningSeed(
+        parent_seed, kPlanningSeedDomainArcInitialIndividual,
+        static_cast<std::uint64_t>(robot_index));
 }
 
 inline std::uint_fast32_t compositeRrtStateSamplerSeed(

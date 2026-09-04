@@ -128,6 +128,54 @@ priority order per trial, k-nearest rewiring, and divides the total budget among
 the remaining single-robot solves. Outputs currently report raw costs; empirical
 `J_hat` normalization and values derived from it are intentionally omitted.
 
+Run the paired 2x2 selectivity ablation (selective bounded replanning on/off and
+selective initial conflict scanning on/off) on all five Panda Cage n=4 tasks:
+
+```bash
+python3 benchmarks/scripts/run_param_sweep.py \
+  --config benchmarks/configs/panda_cage_n4_ao_arc_selectivity.json \
+  --methods ao_arc \
+  --cores 4 \
+  --build-dir build/apps \
+  --output-root benchmarks/results/ao_arc_selectivity_panda_n4
+```
+
+The checked-in diagnostic profile uses three paired planning seeds and a
+30-second budget per cell. Increase `trials_per_param_set` and `time_limit` in
+the configuration for a paper-scale run.
+
+Run the paired Panda Cage n=4 restart-policy experiment. Repair-history depth 0
+means violators-only, depth 1 adds direct repair partners, and depth 2 also adds
+their repair partners. A separate probability can occasionally discard all
+incumbent paths; zero disables that behavior:
+
+```bash
+python3 benchmarks/scripts/run_param_sweep.py \
+  --config benchmarks/configs/panda_cage_n4_ao_arc_restart_policies_90s.json \
+  --methods ao_arc \
+  --cores 4 \
+  --build-dir build/apps \
+  --output-root benchmarks/results/ao_arc_restart_policies_panda_n4
+```
+
+The configuration compares full restart, depths 0/1/2 without random restart,
+depths 0/1/2 with a 25% per-bounded-call full-restart probability, and depth 0
+with a 50% probability. The AO-ARC paper runner explicitly selects depth 0 and
+probability 0 so its historical baseline remains unchanged. The legacy
+one-hop-only diagnostic configuration remains available as
+`panda_cage_n4_ao_arc_repair_history_replanning.json`.
+
+Validate the exact 400-trial matrix and generate its paired summaries and
+plots with:
+
+```bash
+python3 benchmarks/scripts/analyze_ao_arc_restart_policies.py \
+  --root benchmarks/results/ao_arc_restart_policies_panda_n4
+
+python3 benchmarks/scripts/plot_ao_arc_restart_policies.py \
+  benchmarks/results/ao_arc_restart_policies_panda_n4
+```
+
 ## Smaller Experiments
 
 Run feasibility comparisons:

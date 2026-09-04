@@ -12,6 +12,7 @@
 #include <ompl/base/SpaceInformation.h>
 #include <ompl/base/spaces/RealVectorStateSpace.h>
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -289,6 +290,12 @@ bool testBoundedSingleRobotAOXRRTConnect() {
     if (!expectTrue("loose single-robot bound returns exact solution",
                     loose_result.status == ob::PlannerStatus::EXACT_SOLUTION))
         return false;
+    if (!expectTrue(
+            "exact single-robot result satisfies the discrete timestep bound",
+            loose_result.paths.size() == 1 &&
+                loose_result.paths.front().arrival_timestep() <=
+                    *loose.cost_bound_timesteps))
+        return false;
 
     comotion::aorrtc::SolveOptions tight;
     tight.planning_seed = 12;
@@ -318,6 +325,15 @@ bool testBoundedCompositeAOXRRTConnect() {
     if (!expectTrue("composite result splits into two robot paths",
                     loose_result.paths.size() == 2))
         return false;
+    if (!expectTrue(
+            "exact composite result satisfies the discrete makespan bound",
+            std::all_of(
+                loose_result.paths.begin(), loose_result.paths.end(),
+                [&](const comotion::Path &path) {
+                    return path.arrival_timestep() <=
+                           *loose.cost_bound_timesteps;
+                })))
+        return false;
 
     comotion::aorrtc::SolveOptions tight;
     tight.planning_seed = 14;
@@ -339,6 +355,8 @@ bool testAOARCSmokeRecordsFirstSolution() {
     planner.setInitialWindow(4);
     planner.setExpansionStep(4);
     planner.setLocalCompositeRrtMaxSamples(200);
+    planner.setRepairHistoryReplanningDepth(2);
+    planner.setRandomFullRestartProbability(1.0);
     const auto status = planner.solve(0.5);
     if (!expectTrue("AOARC returns exact solution",
                     status == ob::PlannerStatus::EXACT_SOLUTION))
@@ -356,10 +374,36 @@ bool testAOARCSmokeRecordsFirstSolution() {
         return false;
 
     const auto stats = planner.plannerStatsJson();
-    return expectTrue("AOARC stats include first solution event",
-                      stats.contains("solution_events") &&
-                          !stats["solution_events"].empty() &&
-                          stats["solution_events"][0]["kind"] == "first_solution");
+    if (!expectTrue("AOARC stats include first solution event",
+                    stats.contains("solution_events") &&
+                        !stats["solution_events"].empty() &&
+                        stats["solution_events"][0]["kind"] ==
+                            "first_solution"))
+        return false;
+    if (!expectTrue("AOARC records configured restart controls",
+                    stats["repair_history_replanning_depth"] == 2 &&
+                        stats["random_full_restart_probability"] == 1.0 &&
+                        stats["num_bounded_attempts"].get<std::uint64_t>() >
+                            0 &&
+                        stats["num_random_full_restarts"] ==
+                            stats["num_bounded_attempts"]))
+        return false;
+    for (const auto &attempt : stats["bounded_attempts"]) {
+        if (!expectTrue(
+                "forced random restart replans all paths and scans all pairs",
+                attempt["random_full_restart"] == true &&
+                    attempt["selective_replanning_applied"] == false &&
+                    attempt["num_paths_reused"] == 0 &&
+                    attempt["num_conflict_pairs_skipped"] == 0))
+            return false;
+        if (attempt.value("improved", false)) {
+            if (!expectTrue(
+                    "accepted full restart resets incumbent repair history",
+                    attempt.value("repair_history_reset", false)))
+                return false;
+        }
+    }
+    return true;
 }
 
 } // namespace

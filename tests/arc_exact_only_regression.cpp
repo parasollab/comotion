@@ -959,11 +959,12 @@ bool testArcRepairAttemptTelemetryTracksConsumedIndicesAndGlobal() {
 
     const auto &initial = events[0];
     if (!expectTrue(
-            "valid base window remains pre-main and skips bounded solve",
+            "fixed prefix exceeding the bound skips bounded solve",
             initial["phase"].get<std::string>() == "initial_window" &&
                 initial["expansion_index"].is_null() &&
                 initial["endpoints_valid"].get<bool>() &&
-                initial["bounded_epsilon_skipped"].get<bool>() &&
+                !initial["bounded_epsilon_skipped"].get<bool>() &&
+                initial["bounded_fixed_cost_infeasible"].get<bool>() &&
                 !initial["solver_invoked"].get<bool>()))
         return false;
 
@@ -1140,7 +1141,9 @@ bool testArcRepairAttemptTelemetryCountsMainIndexSolutions() {
     probe.setLocalSolverMode(
         comotion::ARC::LocalSolverMode::CompositeRrtOnly);
     probe.setUseCspaceBounds(false);
-    probe.setGlobalMakespanBoundTimesteps(0);
+    // The incumbent arrives at timestep 6. A bound of 6 leaves the base
+    // window only epsilon-sized repair slack while allowing its expansion.
+    probe.setGlobalMakespanBoundTimesteps(6);
     probe.setBoundedLocalRepairEpsilonTimesteps(1);
 
     for (std::size_t repair = 0; repair < 2; ++repair) {
@@ -1204,7 +1207,7 @@ bool testArcRepairAttemptTelemetryCountsMainIndexSolutions() {
     global_probe.setLocalSolverMode(
         comotion::ARC::LocalSolverMode::CompositeRrtOnly);
     global_probe.setUseCspaceBounds(false);
-    global_probe.setGlobalMakespanBoundTimesteps(0);
+    global_probe.setGlobalMakespanBoundTimesteps(6);
     global_probe.setBoundedLocalRepairEpsilonTimesteps(1);
     std::vector<comotion::Path> global_working_paths = {
         makeDensePath(std::vector<std::vector<double>>(7, stationary)),

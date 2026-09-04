@@ -129,6 +129,10 @@ struct AppOptions {
     std::string arc_local_prioritized_rewiring = "knearest";
     bool arc_local_prioritized_persist_at_goal = false;
     std::uint64_t ao_arc_local_bound_epsilon_timesteps = 1;
+    bool ao_arc_selective_replanning = true;
+    bool ao_arc_selective_initial_conflict_scan = true;
+    std::size_t ao_arc_repair_history_replanning_depth = 0;
+    double ao_arc_random_full_restart_probability = 0.0;
     unsigned int or_parallel_worker_processes = 1;
     unsigned int parallel_arc_worker_processes = 2;
     bool parallel_arc_parallel_initial_plans = true;
@@ -1011,7 +1015,7 @@ void printUsage(const char *prog) {
         << "  --algorithm <name>     composite, composite_rrtstar, composite_prmstar, composite_aorrtc,\n"
         << "                         cooperative_composite, prioritized, drrt, drrt_star,\n"
         << "                         ao_drrt,\n"
-        << "                         arc, parallel_arc, stcbs (default: arc)\n"
+        << "                         arc, ao_arc, parallel_arc, stcbs (default: arc)\n"
         << "  --collision-backend <b> sphere, fcl, vamp (default: vamp)\n"
         << "  --vamp-validation-strategy <s> combined_rake, combined_linear,\n"
         << "                         hierarchical_rake, hierarchical_linear\n"
@@ -1074,7 +1078,12 @@ void printUsage(const char *prog) {
         << "  --arc-local-prioritized-return-first-solution <0|1> (default: 1)\n"
         << "  --arc-local-prioritized-rewiring <off|radius|knearest> (default: knearest)\n"
         << "  --arc-local-prioritized-persist-at-goal / --no-arc-local-prioritized-persist-at-goal\n"
-        << "  --ao-arc-local-bound-epsilon-timesteps <n> (default: 1; 0 disables)\n"
+        << "  --ao-arc-local-bound-epsilon-timesteps <n> (default: 1; 0 disables local reduction; reuse still tightens by one tick)\n"
+        << "  --ao-arc-selective-replanning / --no-ao-arc-selective-replanning (default: on)\n"
+        << "  --ao-arc-selective-initial-conflict-scan / --no-ao-arc-selective-initial-conflict-scan (default: on)\n"
+        << "  --ao-arc-repair-history-replanning-depth <n> (default: 0; 1 selects direct repair partners)\n"
+        << "  --ao-arc-random-full-restart-probability <p> (default: 0; p must be in [0,1])\n"
+        << "  --ao-arc-expand-replanning-from-repair-history / --no-ao-arc-expand-replanning-from-repair-history (legacy aliases for depth 1/0)\n"
         << "  --cooperative-rrt-worker-threads <n>\n"
         << "  --or-parallel-worker-processes <n>\n"
         << "  --parallel-arc-worker-processes <n>\n"
@@ -1320,6 +1329,27 @@ AppOptions parseArgs(int argc, char **argv) {
             options.ao_arc_local_bound_epsilon_timesteps =
                 static_cast<std::uint64_t>(
                     std::stoull(requireValue(i, argc, argv, arg)));
+        } else if (arg == "--ao-arc-selective-replanning") {
+            options.ao_arc_selective_replanning = true;
+        } else if (arg == "--no-ao-arc-selective-replanning") {
+            options.ao_arc_selective_replanning = false;
+        } else if (arg == "--ao-arc-selective-initial-conflict-scan") {
+            options.ao_arc_selective_initial_conflict_scan = true;
+        } else if (arg == "--no-ao-arc-selective-initial-conflict-scan") {
+            options.ao_arc_selective_initial_conflict_scan = false;
+        } else if (arg == "--ao-arc-repair-history-replanning-depth") {
+            options.ao_arc_repair_history_replanning_depth =
+                common::parseNonnegativeSizeValue(
+                    requireValue(i, argc, argv, arg), arg);
+        } else if (arg == "--ao-arc-random-full-restart-probability") {
+            options.ao_arc_random_full_restart_probability =
+                common::parseProbabilityValue(
+                    requireValue(i, argc, argv, arg), arg);
+        } else if (arg == "--ao-arc-expand-replanning-from-repair-history") {
+            options.ao_arc_repair_history_replanning_depth = 1;
+        } else if (arg ==
+                   "--no-ao-arc-expand-replanning-from-repair-history") {
+            options.ao_arc_repair_history_replanning_depth = 0;
         } else if (arg == "--or-parallel-worker-processes") {
             options.or_parallel_worker_processes = static_cast<unsigned int>(
                 std::stoul(requireValue(i, argc, argv, arg)));

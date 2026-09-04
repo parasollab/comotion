@@ -664,7 +664,9 @@ SolveResult solveSingleRobotBounded(const MultiRobotProblem &problem,
                 directSinglePath(robot, problem.resolution(), problem.vmax());
         }
         result.best_ompl_cost = result.paths.back().path_cost();
-        if (result.best_ompl_cost > bound_cost + 1e-9) {
+        if (result.paths.back().arrival_timestep() >
+                *options.cost_bound_timesteps ||
+            result.best_ompl_cost > bound_cost + 1e-9) {
             result.status = ob::PlannerStatus::TIMEOUT;
             result.paths.clear();
             result.best_ompl_cost = std::numeric_limits<double>::infinity();
@@ -760,7 +762,8 @@ SolveResult solveCompositeBounded(const MultiRobotProblem &problem,
         const auto [_, makespan] = metricsFromPaths(result.paths);
         (void)_;
         result.best_ompl_cost = timestepsToOmplCost(makespan, problem);
-        if (result.best_ompl_cost > bound_cost + 1e-9) {
+        if (makespan > *options.cost_bound_timesteps ||
+            result.best_ompl_cost > bound_cost + 1e-9) {
             result.status = ob::PlannerStatus::TIMEOUT;
             result.paths.clear();
             result.best_ompl_cost = std::numeric_limits<double>::infinity();

@@ -402,6 +402,12 @@ void ARC::resetArcSolveState() {
     conflict_scan_robot_count_ = 0;
     pair_conflict_scan_start_t_.clear();
     true_arrival_timesteps_.clear();
+    initially_forced_replanning_robots_.clear();
+    initially_selected_for_replanning_robots_.clear();
+    initially_replan_attempted_robots_.clear();
+    initially_replanned_robots_.clear();
+    num_initial_paths_reused_ = 0;
+    num_initial_conflict_pairs_skipped_ = 0;
     last_subproblem_window_start_ = -1;
     warned_bounded_prioritized_disabled_ = false;
     num_conflicts_ = 0;
@@ -476,6 +482,50 @@ void ARC::appendVisualizationRepair(
 void ARC::initializeConflictScanStarts(std::size_t robot_count) {
     conflict_scan_robot_count_ = robot_count;
     pair_conflict_scan_start_t_.assign(pairFrontierSize(robot_count), 0);
+    updateDerivedConflictScanStart();
+}
+
+void ARC::initializeConflictScanStartsForChangedRobots(
+    const std::vector<Path> &paths, const std::vector<int> &changed_robots) {
+    initializeConflictScanStarts(paths.size());
+    std::vector<char> changed(paths.size(), 0);
+    for (const int robot : changed_robots) {
+        if (robot < 0 || static_cast<std::size_t>(robot) >= paths.size()) {
+            throw std::invalid_argument(
+                "ARC initial conflict-scan robot index out of range");
+        }
+        changed[static_cast<std::size_t>(robot)] = 1;
+    }
+
+    // Conflict frontiers denote the next timestep that still needs checking.
+    // A path whose terminal arrival is t occupies timesteps [0, t], so one
+    // past the largest arrival is the first fully-completed frontier.
+    std::size_t completed_frontier = 0;
+    for (const auto &path : paths) {
+        if (path.empty())
+            continue;
+        const std::size_t arrival = path.arrival_timestep();
+        completed_frontier = std::max(
+            completed_frontier,
+            arrival == std::numeric_limits<std::size_t>::max()
+                ? arrival
+                : arrival + 1);
+    }
+    const int stored_completed_frontier =
+        completed_frontier >
+                static_cast<std::size_t>(std::numeric_limits<int>::max())
+            ? std::numeric_limits<int>::max()
+            : static_cast<int>(completed_frontier);
+
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        for (std::size_t j = i + 1; j < paths.size(); ++j) {
+            if (changed[i] || changed[j])
+                continue;
+            pair_conflict_scan_start_t_[pairFrontierIndex(i, j, paths.size())] =
+                stored_completed_frontier;
+            ++num_initial_conflict_pairs_skipped_;
+        }
+    }
     updateDerivedConflictScanStart();
 }
 
@@ -641,9 +691,61 @@ void ARC::recordAppliedRepairHistory(const std::vector<int> &robots,
 bool ARC::planIndividualPaths(const Clock::time_point &solve_start,
                               double timeLimit,
                               std::vector<Path> &working_paths) {
+    return planIndividualPaths(solve_start, timeLimit, working_paths, nullptr);
+}
+
+bool ARC::planIndividualPaths(const Clock::time_point &solve_start,
+                              double timeLimit,
+                              std::vector<Path> &working_paths,
+                              std::vector<int> *replanned_robots_out) {
     int n = problem_->numRobots();
-    working_paths.resize(n);
+    const bool reuse_configured = bounded_initial_paths_.has_value();
+    if (reuse_configured) {
+        if (!global_makespan_bound_timesteps_) {
+            throw std::invalid_argument(
+                "ARC bounded initial paths require a global makespan bound");
+        }
+        if (bounded_initial_paths_->size() != static_cast<std::size_t>(n)) {
+            throw std::invalid_argument(
+                "ARC bounded initial path count must match robot count");
+        }
+        working_paths = *bounded_initial_paths_;
+    } else {
+        working_paths.assign(static_cast<std::size_t>(n), Path{});
+    }
     true_arrival_timesteps_.assign(static_cast<std::size_t>(n), 0);
+    initially_forced_replanning_robots_.clear();
+    initially_selected_for_replanning_robots_.clear();
+    initially_replan_attempted_robots_.clear();
+    initially_replanned_robots_.clear();
+    num_initial_paths_reused_ = 0;
+    std::vector<char> forced_replanning(static_cast<std::size_t>(n), 0);
+    if (!bounded_initial_forced_replanning_robots_.empty() &&
+        !reuse_configured) {
+        throw std::invalid_argument(
+            "ARC forced bounded initial replanning requires seeded paths");
+    }
+    for (const int robot : bounded_initial_forced_replanning_robots_) {
+        if (robot < 0 || robot >= n) {
+            throw std::invalid_argument(
+                "ARC forced bounded initial replanning robot index out of "
+                "range");
+        }
+        forced_replanning[static_cast<std::size_t>(robot)] = 1;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (forced_replanning[static_cast<std::size_t>(i)])
+            initially_forced_replanning_robots_.push_back(i);
+    }
+    const auto reuse_bound =
+        bounded_initial_path_reuse_bound_timesteps_
+            ? bounded_initial_path_reuse_bound_timesteps_
+            : global_makespan_bound_timesteps_;
+    if (global_makespan_bound_timesteps_ && reuse_bound &&
+        *reuse_bound > *global_makespan_bound_timesteps_) {
+        throw std::invalid_argument(
+            "ARC initial-path reuse bound exceeds global bound");
+    }
     const auto initial_wall_start = Clock::now();
     const double initial_cpu_start = processCpuSeconds();
     const auto finishInitialTiming = [&]() {
@@ -655,6 +757,34 @@ bool ARC::planIndividualPaths(const Clock::time_point &solve_start,
     };
 
     for (int i = 0; i < n; ++i) {
+        const auto robot_index = static_cast<std::size_t>(i);
+        if (reuse_configured && reuse_bound &&
+            !forced_replanning[robot_index] &&
+            !working_paths[robot_index].empty() &&
+            working_paths[robot_index].arrival_timestep() <=
+                *reuse_bound) {
+            const auto &robot = problem_->robot(i);
+            constexpr double kEndpointTolerance = 1e-6;
+            std::ostringstream start_context;
+            start_context << "ARC reused bounded initial start mismatch for robot "
+                          << i;
+            comotion::detail::requireConfigNear(
+                working_paths[robot_index].front(), robot.start,
+                kEndpointTolerance, start_context.str());
+            std::ostringstream goal_context;
+            goal_context << "ARC reused bounded initial goal mismatch for robot "
+                         << i;
+            comotion::detail::requireConfigNear(
+                working_paths[robot_index].back(), robot.goal,
+                kEndpointTolerance, goal_context.str());
+            true_arrival_timesteps_[robot_index] =
+                static_cast<std::uint64_t>(
+                    working_paths[robot_index].arrival_timestep());
+            ++num_initial_paths_reused_;
+            continue;
+        }
+
+        initially_selected_for_replanning_robots_.push_back(i);
         double elapsed_s = std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - solve_start)
                                .count();
@@ -663,7 +793,13 @@ bool ARC::planIndividualPaths(const Clock::time_point &solve_start,
             finishInitialTiming();
             return false;
         }
-        auto result = planIndividualPath(i, remaining);
+        initially_replan_attempted_robots_.push_back(i);
+        const auto local_seed = global_makespan_bound_timesteps_
+                                    ? std::optional<std::uint32_t>(
+                                          arcInitialIndividualPlanningSeed(
+                                              planning_seed_, i))
+                                    : std::nullopt;
+        auto result = planIndividualPath(i, remaining, local_seed);
         recordInitialIndividualPlanStats(result);
         if (!result.success) {
             finishInitialTiming();
@@ -672,10 +808,13 @@ bool ARC::planIndividualPaths(const Clock::time_point &solve_start,
         working_paths[i] = std::move(result.path);
         true_arrival_timesteps_[static_cast<std::size_t>(i)] =
             result.arrival_timestep;
+        initially_replanned_robots_.push_back(i);
     }
 
     finishInitialIndividualPaths(working_paths);
     finishInitialTiming();
+    if (replanned_robots_out)
+        *replanned_robots_out = initially_replanned_robots_;
     return true;
 }
 
@@ -693,7 +832,7 @@ ARC::IndividualPlanResult ARC::planIndividualPath(
     if (global_makespan_bound_timesteps_) {
         aorrtc::SolveOptions options;
         options.planning_seed = local_seed.value_or(planning_seed_);
-        options.cost_bound_timesteps = *global_makespan_bound_timesteps_;
+        options.cost_bound_timesteps = global_makespan_bound_timesteps_;
         options.simplify_solution = simplify_initial_solutions_;
         options.simplification_options = simplification_options_;
         if (local_composite_rrt_max_samples_ > 0) {
@@ -720,6 +859,16 @@ ARC::IndividualPlanResult ARC::planIndividualPath(
         result.path = std::move(bounded.paths.front());
         result.arrival_timestep =
             static_cast<std::uint64_t>(result.path.arrival_timestep());
+        // The AO-RRTC threshold is expressed as a floating path length. Path
+        // conversion assigns integer timesteps afterward, so enforce the
+        // actual discrete contract that selective reuse depends on as well.
+        if (result.arrival_timestep > *global_makespan_bound_timesteps_) {
+            result.status_type =
+                static_cast<int>(ompl::base::PlannerStatus::TIMEOUT);
+            result.status_message = "discrete arrival exceeds bounded cost";
+            result.path.clear();
+            return result;
+        }
         if (result.path.empty()) {
             std::ostringstream msg;
             msg << "ARC exact bounded individual path missing for robot "
@@ -827,6 +976,20 @@ ARC::IndividualPlanResult ARC::planIndividualPath(
     result.success = true;
     result.cpu_seconds = elapsedProcessCpuSeconds(cpu_start);
     return result;
+}
+
+std::optional<std::uint64_t> ARC::localMakespanBoundForRobot(
+    std::uint64_t global_bound, std::uint64_t arrival_timestep,
+    int window_start_t, int window_end_t) {
+    const std::uint64_t prefix =
+        static_cast<std::uint64_t>(std::max(0, window_start_t));
+    const std::uint64_t end = static_cast<std::uint64_t>(
+        std::max(std::max(0, window_start_t), window_end_t));
+    const std::uint64_t suffix =
+        arrival_timestep > end ? arrival_timestep - end : 0;
+    if (prefix > global_bound || suffix > global_bound - prefix)
+        return std::nullopt;
+    return global_bound - prefix - suffix;
 }
 
 void ARC::recordInitialIndividualPlanStats(
@@ -1072,8 +1235,9 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
         }
         std::optional<std::uint64_t> local_makespan_bound_timesteps;
         bool skip_bounded_local_attempt_for_epsilon = false;
+        bool skip_bounded_local_attempt_for_fixed_cost = false;
         if (global_makespan_bound_timesteps_) {
-            std::uint64_t min_slack =
+            std::uint64_t raw_local_bound =
                 std::numeric_limits<std::uint64_t>::max();
             for (const int r : involved_robots) {
                 const auto arrival =
@@ -1082,18 +1246,21 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
                         : static_cast<std::uint64_t>(
                               working_paths[static_cast<std::size_t>(r)]
                                   .arrival_timestep());
-                const std::uint64_t slack =
-                    *global_makespan_bound_timesteps_ > arrival
-                        ? *global_makespan_bound_timesteps_ - arrival
-                        : 0;
-                min_slack = std::min(min_slack, slack);
+                const auto robot_local_bound = localMakespanBoundForRobot(
+                    *global_makespan_bound_timesteps_, arrival, start_t,
+                    end_t);
+                if (!robot_local_bound) {
+                    skip_bounded_local_attempt_for_fixed_cost = true;
+                    break;
+                }
+                raw_local_bound =
+                    std::min(raw_local_bound, *robot_local_bound);
             }
-            if (min_slack == std::numeric_limits<std::uint64_t>::max())
-                min_slack = 0;
-            std::uint64_t raw_local_bound =
-                static_cast<std::uint64_t>(std::max(0, end_t - start_t)) +
-                min_slack;
-            if (!temporal_full_window &&
+            if (raw_local_bound ==
+                std::numeric_limits<std::uint64_t>::max())
+                raw_local_bound = 0;
+            if (!skip_bounded_local_attempt_for_fixed_cost &&
+                !temporal_full_window &&
                 bounded_local_repair_epsilon_timesteps_ > 0) {
                 if (raw_local_bound <=
                     bounded_local_repair_epsilon_timesteps_) {
@@ -1107,6 +1274,8 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
         }
         current_event.bounded_epsilon_skipped =
             skip_bounded_local_attempt_for_epsilon;
+        current_event.bounded_fixed_cost_infeasible =
+            skip_bounded_local_attempt_for_fixed_cost;
 
         const auto remainingWall = [&]() {
             const double elapsed = std::chrono::duration<double>(
@@ -1117,7 +1286,8 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
         };
 
         if (local_endpoints_valid &&
-            !skip_bounded_local_attempt_for_epsilon) {
+            !skip_bounded_local_attempt_for_epsilon &&
+            !skip_bounded_local_attempt_for_fixed_cost) {
             const bool bounded_arc_subproblem =
                 global_makespan_bound_timesteps_.has_value();
             const bool prioritized_requested =
@@ -1793,6 +1963,8 @@ nlohmann::json ARC::repairAttemptEventsJson() const {
             {"goal_valid", event.goal_valid},
             {"endpoints_valid", event.endpoints_valid},
             {"bounded_epsilon_skipped", event.bounded_epsilon_skipped},
+            {"bounded_fixed_cost_infeasible",
+             event.bounded_fixed_cost_infeasible},
             {"prioritized_invoked", event.prioritized_invoked},
             {"composite_invoked", event.composite_invoked},
             {"solver_invoked", event.solver_invoked},
@@ -2218,6 +2390,31 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
             {"multipliers",
              initialValidWindowExpansionMultipliersInheritMain()},
         };
+        stats["bounded_initialization"] = {
+            {"seed_paths_supplied", bounded_initial_paths_.has_value()},
+            {"initial_path_reuse_bound_timesteps",
+             bounded_initial_path_reuse_bound_timesteps_
+                 ? nlohmann::json(
+                       *bounded_initial_path_reuse_bound_timesteps_)
+                 : nlohmann::json(nullptr)},
+            {"selective_initial_conflict_scan",
+             selective_initial_conflict_scan_},
+            {"forced_replanning_robot_indices",
+             initially_forced_replanning_robots_},
+            {"selected_for_replanning_robot_indices",
+             initially_selected_for_replanning_robots_},
+            {"replan_attempted_robot_indices",
+             initially_replan_attempted_robots_},
+            {"replanned_robot_indices", initially_replanned_robots_},
+            {"num_paths_replan_attempted",
+             initially_replan_attempted_robots_.size()},
+            {"num_paths_forced_to_replan",
+             initially_forced_replanning_robots_.size()},
+            {"num_paths_replanned", initially_replanned_robots_.size()},
+            {"num_paths_reused", num_initial_paths_reused_},
+            {"num_conflict_pairs_skipped",
+             num_initial_conflict_pairs_skipped_},
+        };
         stats["repair_attempt_events"] = repairAttemptEventsJson();
         stats["conflict_resolution_events"] =
             conflictResolutionEventsJson();
@@ -2228,11 +2425,18 @@ ompl::base::PlannerStatus ARC::solve(double timeLimit) {
     };
 
     // Step 1: Plan individual paths (each robot gets remaining wall time)
-    if (!planIndividualPaths(start_time, timeLimit, solution_paths_)) {
+    std::vector<int> initially_replanned_robots;
+    if (!planIndividualPaths(start_time, timeLimit, solution_paths_,
+                             &initially_replanned_robots)) {
         finalizePlannerStats();
         return ompl::base::PlannerStatus::TIMEOUT;
     }
-    initializeConflictScanStarts(solution_paths_.size());
+    if (selective_initial_conflict_scan_) {
+        initializeConflictScanStartsForChangedRobots(
+            solution_paths_, initially_replanned_robots);
+    } else {
+        initializeConflictScanStarts(solution_paths_.size());
+    }
 
     auto ptrs = problem_->robotModelPtrs();
     // Step 2: Iteratively find and resolve conflicts

@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -316,6 +317,40 @@ inline bool parseBoolValue(const std::string &value) {
         return false;
     }
     throw std::runtime_error("Expected boolean value, got: " + value);
+}
+
+inline std::size_t parseNonnegativeSizeValue(const std::string &value,
+                                             const std::string &label) {
+    if (value.empty() || value.front() == '-')
+        throw std::runtime_error(label + " must be a non-negative integer");
+    std::size_t consumed = 0;
+    unsigned long long parsed = 0;
+    try {
+        parsed = std::stoull(value, &consumed);
+    } catch (const std::exception &) {
+        throw std::runtime_error(label + " must be a non-negative integer");
+    }
+    if (consumed != value.size() ||
+        parsed > std::numeric_limits<std::size_t>::max()) {
+        throw std::runtime_error(label + " must be a non-negative integer");
+    }
+    return static_cast<std::size_t>(parsed);
+}
+
+inline double parseProbabilityValue(const std::string &value,
+                                    const std::string &label) {
+    std::size_t consumed = 0;
+    double probability = 0.0;
+    try {
+        probability = std::stod(value, &consumed);
+    } catch (const std::exception &) {
+        throw std::runtime_error(label + " must be finite and in [0, 1]");
+    }
+    if (consumed != value.size() || !std::isfinite(probability) ||
+        probability < 0.0 || probability > 1.0) {
+        throw std::runtime_error(label + " must be finite and in [0, 1]");
+    }
+    return probability;
 }
 
 inline comotion::InterRobotConflictBatchMode
@@ -1054,6 +1089,14 @@ PlannerBlueprint makePlannerBlueprint(const Options &options,
                 options.arc_local_prioritized_persist_at_goal);
             planner->setBoundedLocalRepairEpsilonTimesteps(
                 options.ao_arc_local_bound_epsilon_timesteps);
+            planner->setSelectiveBoundedReplanning(
+                options.ao_arc_selective_replanning);
+            planner->setSelectiveInitialConflictScan(
+                options.ao_arc_selective_initial_conflict_scan);
+            planner->setRepairHistoryReplanningDepth(
+                options.ao_arc_repair_history_replanning_depth);
+            planner->setRandomFullRestartProbability(
+                options.ao_arc_random_full_restart_probability);
             planner->setSimplifyInitialSolutions(
                 options.arc_simplify_initial_solutions);
             planner->setSimplifyConflictSolutions(

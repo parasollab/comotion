@@ -309,19 +309,36 @@ bool testParallelArcRepairSeedHierarchy() {
 bool testAoArcBoundedAttemptSeedHierarchy() {
     constexpr std::uint32_t kParentSeed = 29;
     std::set<std::uint32_t> seeds;
+    std::set<std::uint32_t> restart_words;
     for (std::uint64_t attempt = 0; attempt < 1024; ++attempt) {
         const auto seed = comotion::aoArcBoundedAttemptPlanningSeed(
             kParentSeed, attempt);
+        const auto restart_word =
+            comotion::aoArcRandomRestartDecisionWord(kParentSeed, attempt);
         seeds.insert(seed);
+        restart_words.insert(restart_word);
         if (!expectTrue(
                 "AO-ARC bounded-attempt seed is deterministic",
                 seed == comotion::aoArcBoundedAttemptPlanningSeed(
                             kParentSeed, attempt))) {
             return false;
         }
+        if (!expectTrue(
+                "AO-ARC random-restart word is deterministic",
+                restart_word == comotion::aoArcRandomRestartDecisionWord(
+                                    kParentSeed, attempt))) {
+            return false;
+        }
+        if (!expectTrue(
+                "AO-ARC random-restart domain differs from attempt seed",
+                restart_word != seed)) {
+            return false;
+        }
     }
     return expectTrue("1024 AO-ARC bounded attempts have unique seeds",
                       seeds.size() == 1024) &&
+           expectTrue("1024 AO-ARC restart decisions have unique words",
+                      restart_words.size() == 1024) &&
            expectTrue(
                "AO-ARC bounded attempt does not reuse the initial seed",
                comotion::aoArcBoundedAttemptPlanningSeed(kParentSeed, 0) !=

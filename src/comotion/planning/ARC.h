@@ -277,6 +277,8 @@ public:
     void setLocalSolverBudgetExpansionIncrement(double /*seconds_per_expansion*/) {}
 
 protected:
+    friend class AOARC;
+
     struct ArcPlannerStatsSummary {
         LocalSolverMode local_solver_mode = LocalSolverMode::Both;
         unsigned int local_prioritized_strrt_max_iterations = 0;
@@ -383,6 +385,7 @@ protected:
         bool goal_valid = false;
         bool endpoints_valid = false;
         bool bounded_epsilon_skipped = false;
+        bool bounded_fixed_cost_infeasible = false;
         bool prioritized_invoked = false;
         bool composite_invoked = false;
         bool solver_invoked = false;
@@ -411,6 +414,35 @@ protected:
         std::string error_message;
     };
 
+    /// Seed a bounded ARC solve with an already-valid team trajectory. Paths
+    /// whose arrival exceeds the configured reuse threshold are replanned
+    /// under the normal global bound; the remaining paths are retained.
+    void setBoundedInitialPaths(std::vector<Path> paths) {
+        bounded_initial_paths_ = std::move(paths);
+    }
+    void clearBoundedInitialPaths() { bounded_initial_paths_.reset(); }
+    void setBoundedInitialPathReuseBoundTimesteps(std::uint64_t bound) {
+        bounded_initial_path_reuse_bound_timesteps_ = bound;
+    }
+    void clearBoundedInitialPathReuseBoundTimesteps() {
+        bounded_initial_path_reuse_bound_timesteps_.reset();
+    }
+    /// Force seeded paths to be replanned even when they satisfy the
+    /// configured reuse threshold.
+    void setBoundedInitialForcedReplanningRobots(std::vector<int> robots) {
+        bounded_initial_forced_replanning_robots_ = std::move(robots);
+    }
+    void clearBoundedInitialForcedReplanningRobots() {
+        bounded_initial_forced_replanning_robots_.clear();
+    }
+    void setSelectiveInitialConflictScan(bool enabled) {
+        selective_initial_conflict_scan_ = enabled;
+    }
+
+    static std::optional<std::uint64_t> localMakespanBoundForRobot(
+        std::uint64_t global_bound, std::uint64_t arrival_timestep,
+        int window_start_t, int window_end_t);
+
     void resetArcSolveState();
 
     IndividualPlanResult
@@ -424,6 +456,10 @@ protected:
     bool planIndividualPaths(const Clock::time_point &solve_start,
                              double timeLimit,
                              std::vector<Path> &working_paths);
+    bool planIndividualPaths(const Clock::time_point &solve_start,
+                             double timeLimit,
+                             std::vector<Path> &working_paths,
+                             std::vector<int> *replanned_robots_out);
 
     // Attempt to solve a subproblem with the solver hierarchy
     /// On success, if window_start_t_out is non-null, writes native path timestep
@@ -527,6 +563,9 @@ protected:
     nlohmann::json conflictSolveCountsByExpansionStageJson() const;
 
     void initializeConflictScanStarts(std::size_t robot_count);
+    void initializeConflictScanStartsForChangedRobots(
+        const std::vector<Path> &paths,
+        const std::vector<int> &changed_robots);
     CompositePathValidationOptions conflictScanOptions() const;
     void applyConflictScanProgress(
         const std::vector<std::size_t> &next_t_begin_by_pair);
@@ -560,6 +599,17 @@ protected:
         return std::max(0, conflict.timestep - initial_window_);
     }
     std::vector<Path> solution_paths_;
+    std::optional<std::vector<Path>> bounded_initial_paths_;
+    std::optional<std::uint64_t>
+        bounded_initial_path_reuse_bound_timesteps_;
+    std::vector<int> bounded_initial_forced_replanning_robots_;
+    bool selective_initial_conflict_scan_ = false;
+    std::vector<int> initially_forced_replanning_robots_;
+    std::vector<int> initially_selected_for_replanning_robots_;
+    std::vector<int> initially_replan_attempted_robots_;
+    std::vector<int> initially_replanned_robots_;
+    std::uint64_t num_initial_paths_reused_ = 0;
+    std::uint64_t num_initial_conflict_pairs_skipped_ = 0;
     std::map<int, std::map<int, std::vector<RepairWindow>>>
         repair_window_schedule_;
     std::vector<AppliedRepairHistoryEvent> applied_repair_history_events_;

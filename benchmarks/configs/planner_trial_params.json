@@ -34,6 +34,12 @@
     "stcbs_max_ct_nodes": 5000
   },
   "planners": {
+    "ao_arc": {
+      "ao_arc_selective_replanning": true,
+      "ao_arc_selective_initial_conflict_scan": true,
+      "ao_arc_repair_history_replanning_depth": 0,
+      "ao_arc_random_full_restart_probability": 0.0
+    },
     "arc": {
       "vamp_validation_strategy": "combined_rake",
       "arc_local_composite_use_makespan_metric": true,

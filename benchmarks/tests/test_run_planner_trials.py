@@ -225,6 +225,59 @@ class PlannerTrialRunnerTest(unittest.TestCase):
                     runner.planner_params_to_args(params),
                 )
 
+    def test_ao_arc_selectivity_parameters_map_to_boolean_flag_pairs(self) -> None:
+        self.assertEqual(
+            runner.planner_params_to_args(
+                {
+                    "ao_arc_selective_replanning": True,
+                    "ao_arc_selective_initial_conflict_scan": False,
+                    "ao_arc_expand_replanning_from_repair_history": True,
+                }
+            ),
+            (
+                "--ao-arc-selective-replanning",
+                "--no-ao-arc-selective-initial-conflict-scan",
+                "--ao-arc-expand-replanning-from-repair-history",
+            ),
+        )
+        self.assertEqual(
+            runner.planner_params_to_args(
+                {
+                    "ao_arc_selective_replanning": False,
+                    "ao_arc_selective_initial_conflict_scan": True,
+                    "ao_arc_expand_replanning_from_repair_history": False,
+                }
+            ),
+            (
+                "--no-ao-arc-selective-replanning",
+                "--ao-arc-selective-initial-conflict-scan",
+                "--no-ao-arc-expand-replanning-from-repair-history",
+            ),
+        )
+
+    def test_ao_arc_history_depth_and_random_restart_map_to_values(self) -> None:
+        self.assertEqual(
+            runner.planner_params_to_args(
+                {
+                    "ao_arc_repair_history_replanning_depth": 2,
+                    "ao_arc_random_full_restart_probability": 0.25,
+                }
+            ),
+            (
+                "--ao-arc-repair-history-replanning-depth",
+                "2",
+                "--ao-arc-random-full-restart-probability",
+                "0.25",
+            ),
+        )
+        with self.assertRaisesRegex(RuntimeError, "Do not combine"):
+            runner.planner_params_to_args(
+                {
+                    "ao_arc_repair_history_replanning_depth": 2,
+                    "ao_arc_expand_replanning_from_repair_history": False,
+                }
+            )
+
     def test_parallel_arc_uses_cyclic_cover_greedy_by_default(self) -> None:
         param_doc = runner.read_json_file(
             REPO_ROOT / "benchmarks" / "configs" / "planner_trial_params.json"

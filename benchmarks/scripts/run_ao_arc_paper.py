@@ -60,7 +60,15 @@ PAPER_VARIANTS: dict[str, PlannerVariant] = {
         "AO-ARC",
         "ao_arc",
         "ao_arc",
-        ("--arc-local-composite-use-makespan-metric",),
+        (
+            "--arc-local-composite-use-makespan-metric",
+            "--ao-arc-selective-replanning",
+            "--ao-arc-selective-initial-conflict-scan",
+            "--ao-arc-repair-history-replanning-depth",
+            "0",
+            "--ao-arc-random-full-restart-probability",
+            "0",
+        ),
     ),
     "comp_rrtc": PlannerVariant(
         "CompRRTC",

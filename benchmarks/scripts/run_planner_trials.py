@@ -347,6 +347,27 @@ PARAMETER_FLAGS: dict[str, FlagSpec] = {
     "ao_arc_local_bound_epsilon_timesteps": FlagSpec(
         "--ao-arc-local-bound-epsilon-timesteps"
     ),
+    "ao_arc_selective_replanning": FlagSpec(
+        "--ao-arc-selective-replanning",
+        "bool-pair",
+        "--no-ao-arc-selective-replanning",
+    ),
+    "ao_arc_selective_initial_conflict_scan": FlagSpec(
+        "--ao-arc-selective-initial-conflict-scan",
+        "bool-pair",
+        "--no-ao-arc-selective-initial-conflict-scan",
+    ),
+    "ao_arc_repair_history_replanning_depth": FlagSpec(
+        "--ao-arc-repair-history-replanning-depth"
+    ),
+    "ao_arc_random_full_restart_probability": FlagSpec(
+        "--ao-arc-random-full-restart-probability"
+    ),
+    "ao_arc_expand_replanning_from_repair_history": FlagSpec(
+        "--ao-arc-expand-replanning-from-repair-history",
+        "bool-pair",
+        "--no-ao-arc-expand-replanning-from-repair-history",
+    ),
     "or_parallel_worker_processes": FlagSpec("--or-parallel-worker-processes"),
     "parallel_arc_worker_processes": FlagSpec("--parallel-arc-worker-processes"),
     "parallel_arc_parallel_initial_plans": FlagSpec(
@@ -672,6 +693,16 @@ def param_value_text(value: Any) -> str:
 
 
 def planner_params_to_args(params: dict[str, Any]) -> tuple[str, ...]:
+    history_depth_key = "ao_arc_repair_history_replanning_depth"
+    legacy_history_key = "ao_arc_expand_replanning_from_repair_history"
+    if (
+        params.get(history_depth_key) is not None
+        and params.get(legacy_history_key) is not None
+    ):
+        raise RuntimeError(
+            f"Do not combine {history_depth_key} with the legacy "
+            f"{legacy_history_key} option"
+        )
     args: list[str] = []
     for key, spec in PARAMETER_FLAGS.items():
         if key not in params:
