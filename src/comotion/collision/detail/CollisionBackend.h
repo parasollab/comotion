@@ -1,6 +1,7 @@
 #pragma once
 
 #include "comotion/collision/ObstacleShapes.h"
+#include "comotion/collision/CollisionChecker.h"
 #include "comotion/collision/ValidationTypes.h"
 #include "comotion/planning/Path.h"
 #include "comotion/robot/RobotModel.h"
@@ -220,6 +221,12 @@ struct CollisionBackend {
     virtual ~CollisionBackend() = default;
 
     virtual std::unique_ptr<CollisionBackend> clone() const = 0;
+    virtual void setAttachmentContacts(
+        const std::vector<CollisionChecker::RobotAttachmentContact> &contacts) {
+        if (!contacts.empty())
+            throw std::invalid_argument(
+                "Selected native collision backend does not support directed attachment contacts");
+    }
 
     virtual void setVampValidationStrategy(
         const VampValidationStrategy &) {}

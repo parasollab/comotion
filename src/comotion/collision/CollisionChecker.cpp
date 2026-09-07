@@ -2,6 +2,8 @@
 #include "comotion/collision/detail/CollisionBackend.h"
 
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -154,7 +156,8 @@ CollisionChecker::~CollisionChecker() = default;
 CollisionChecker::CollisionChecker(const CollisionChecker &other)
     : impl_(std::make_unique<Impl>(other.impl_->backend->clone())),
       backend_(other.backend_), obstacles_(other.obstacles_),
-      cylinders_(other.cylinders_) {
+      cylinders_(other.cylinders_), fixed_robots_(other.fixed_robots_),
+      attachment_contacts_(other.attachment_contacts_) {
     impl_->backend->onEnvironmentChanged(obstacles_, cylinders_);
 }
 
@@ -164,6 +167,8 @@ CollisionChecker &CollisionChecker::operator=(const CollisionChecker &other) {
     backend_ = other.backend_;
     obstacles_ = other.obstacles_;
     cylinders_ = other.cylinders_;
+    fixed_robots_ = other.fixed_robots_;
+    attachment_contacts_ = other.attachment_contacts_;
     impl_ = std::make_unique<Impl>(other.impl_->backend->clone());
     impl_->backend->onEnvironmentChanged(obstacles_, cylinders_);
     return *this;
@@ -173,6 +178,32 @@ CollisionChecker::CollisionChecker(CollisionChecker &&other) noexcept = default;
 
 CollisionChecker &CollisionChecker::operator=(CollisionChecker &&other) noexcept =
     default;
+
+void CollisionChecker::setFixedRobots(std::vector<FixedRobot> robots) {
+    for (const auto &robot : robots) {
+        if (!robot.model || robot.configuration.size() !=
+                                static_cast<std::size_t>(robot.model->numJoints()) ||
+            !std::all_of(robot.configuration.begin(), robot.configuration.end(),
+                         [](double value) { return std::isfinite(value); }))
+            throw std::invalid_argument("Invalid fixed robot collision context");
+    }
+    fixed_robots_ = std::move(robots);
+}
+
+void CollisionChecker::setAttachmentContacts(
+    std::vector<RobotAttachmentContact> contacts) {
+    for (const auto &contact : contacts) {
+        if (!contact.owner || !contact.other || contact.owner == contact.other ||
+            !contact.owner->attachment() || contact.other_links.empty() ||
+            contact.owner->attachment()->name != contact.attached_entity)
+            throw std::invalid_argument("Invalid directed attachment contact");
+        for (const auto &link : contact.other_links)
+            if (contact.other->linkIndex(link) < 0)
+                throw std::invalid_argument("Attachment contact names unknown link: " + link);
+    }
+    impl_->backend->setAttachmentContacts(contacts);
+    attachment_contacts_ = std::move(contacts);
+}
 
 void CollisionChecker::setObstacles(
     const std::vector<ObstacleSphere> &obstacles) {
@@ -211,7 +242,13 @@ ValidationTimingStats CollisionChecker::validationTimingStats() {
 
 bool CollisionChecker::isValidSingle(const RobotModel &robot,
                                      const std::vector<double> &config) const {
-    return impl_->backend->isValidSingle(robot, config, obstacles_, cylinders_);
+    if (!impl_->backend->isValidSingle(robot, config, obstacles_, cylinders_))
+        return false;
+    for (const auto &fixed : fixed_robots_) {
+        if (!isValidPair(robot, config, *fixed.model, fixed.configuration))
+            return false;
+    }
+    return true;
 }
 
 bool CollisionChecker::isSelfCollisionFree(
@@ -254,14 +291,25 @@ bool CollisionChecker::isMotionValid(const RobotModel &robot,
                                      const std::vector<double> &from,
                                      const std::vector<double> &to,
                                      int num_checks) const {
-    return impl_->backend->isMotionValid(robot, from, to, num_checks,
-                                         obstacles_, cylinders_);
+    if (!impl_->backend->isMotionValid(robot, from, to, num_checks,
+                                       obstacles_, cylinders_))
+        return false;
+    CompositePathValidationOptions options;
+    options.check_environment = false;
+    options.discrete_num_checks_hint = num_checks;
+    for (const auto &fixed : fixed_robots_) {
+        if (!impl_->backend->isCompositeMotionValid(
+                {&robot, fixed.model.get()}, {from, fixed.configuration},
+                {to, fixed.configuration}, options, {}, {}))
+            return false;
+    }
+    return true;
 }
 
 bool CollisionChecker::isRobotPathValid(const RobotModel &robot,
                                         const Path &path) const {
-    return impl_->backend->isRobotPathValid(robot, path, obstacles_,
-                                            cylinders_);
+    return impl_->backend->isRobotPathValid(robot, path, obstacles_, cylinders_) &&
+           !fixedPathConflict({path}, {&robot}, {}).has_value();
 }
 
 bool CollisionChecker::isPairPathValid(
@@ -302,8 +350,12 @@ bool CollisionChecker::isCompositeMotionValid(
     const CompositePathValidationOptions &options) const {
     const ScopedValidationTiming timer(ValidationTimingOp::CompositeMotion,
                                        *impl_->backend);
-    return impl_->backend->isCompositeMotionValid(robots, from, to, options,
-                                                  obstacles_, cylinders_);
+    if (fixed_robots_.empty())
+        return impl_->backend->isCompositeMotionValid(robots, from, to, options,
+                                                      obstacles_, cylinders_);
+    if (robots.size() != from.size() || robots.size() != to.size())
+        return false;
+    return !findFirstCompositeMotionConflict(robots, from, to, options);
 }
 
 std::optional<CompositeConflict>
@@ -314,8 +366,67 @@ CollisionChecker::findFirstCompositeMotionConflict(
     const CompositePathValidationOptions &options) const {
     const ScopedValidationTiming timer(
         ValidationTimingOp::CompositeMotionConflict, *impl_->backend);
-    return impl_->backend->findFirstCompositeMotionConflict(
+    auto conflict = impl_->backend->findFirstCompositeMotionConflict(
         robots, from, to, options, obstacles_, cylinders_);
+    auto pair_options = options;
+    pair_options.check_environment = false;
+    pair_options.per_path_t_begin.clear();
+    pair_options.per_pair_t_begin.clear();
+    for (std::size_t i = 0; i < robots.size(); ++i) {
+        for (const auto &fixed : fixed_robots_) {
+            auto candidate = impl_->backend->findFirstCompositeMotionConflict(
+                {robots[i], fixed.model.get()}, {from[i], fixed.configuration},
+                {to[i], fixed.configuration}, pair_options, {}, {});
+            if (candidate && (!conflict || candidate->timestep < conflict->timestep)) {
+                candidate->scope = ConflictScope::Environment;
+                candidate->robot_i = static_cast<int>(i);
+                candidate->robot_j = -1;
+                conflict = std::move(candidate);
+            }
+        }
+    }
+    return conflict;
+}
+
+std::optional<CompositeConflict> CollisionChecker::fixedPathConflict(
+    const std::vector<Path> &paths, const std::vector<const RobotModel *> &robots,
+    const CompositePathValidationOptions &options) const {
+    if (fixed_robots_.empty())
+        return std::nullopt;
+    if (paths.size() != robots.size())
+        throw std::invalid_argument("Fixed-context path/model count mismatch");
+    std::optional<CompositeConflict> first;
+    auto pair_options = options;
+    pair_options.check_environment = false;
+    pair_options.per_path_t_begin.clear();
+    pair_options.per_pair_t_begin.clear();
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        const auto &path = paths[i];
+        if (path.empty())
+            continue;
+        const auto begin = std::max(options.t_begin,
+            i < options.per_path_t_begin.size() ? options.per_path_t_begin[i] : 0);
+        const auto end = std::min(options.t_end, path.arrival_timestep() + 1);
+        for (std::size_t t = begin; t < end; ++t) {
+            if (options.stop_requested && options.stop_requested())
+                return first;
+            const auto from = path.config_at_timestep(t);
+            const auto to = path.config_at_timestep(std::min(t + 1, end - 1));
+            for (const auto &fixed : fixed_robots_) {
+                auto candidate = impl_->backend->findFirstCompositeMotionConflict(
+                    {robots[i], fixed.model.get()}, {from, fixed.configuration},
+                    {to, fixed.configuration}, pair_options, {}, {});
+                if (candidate && (!first || t < first->timestep)) {
+                    candidate->scope = ConflictScope::Environment;
+                    candidate->robot_i = static_cast<int>(i);
+                    candidate->robot_j = -1;
+                    candidate->timestep = t;
+                    first = std::move(candidate);
+                }
+            }
+        }
+    }
+    return first;
 }
 
 bool CollisionChecker::validateCompositePaths(
@@ -325,7 +436,8 @@ bool CollisionChecker::validateCompositePaths(
     const ScopedValidationTiming timer(ValidationTimingOp::CompositePaths,
                                        *impl_->backend);
     return impl_->backend->validateCompositePaths(paths, robots, options,
-                                                  obstacles_, cylinders_);
+                                                  obstacles_, cylinders_) &&
+           !fixedPathConflict(paths, robots, options);
 }
 
 std::optional<CompositeConflict>
@@ -336,9 +448,12 @@ CollisionChecker::findFirstCompositePathConflict(
     std::vector<std::size_t> *next_t_begin_by_robot_out) const {
     const ScopedValidationTiming timer(ValidationTimingOp::CompositePathConflict,
                                        *impl_->backend);
-    return impl_->backend->findFirstCompositePathConflict(
+    auto conflict = impl_->backend->findFirstCompositePathConflict(
         paths, robots, options, obstacles_, cylinders_,
         next_t_begin_by_robot_out);
+    auto fixed = fixedPathConflict(paths, robots, options);
+    return fixed && (!conflict || fixed->timestep < conflict->timestep)
+               ? fixed : conflict;
 }
 
 std::vector<CompositeConflict>

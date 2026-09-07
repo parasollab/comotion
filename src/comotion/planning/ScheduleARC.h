@@ -22,6 +22,12 @@ enum class ScheduleArcConflictType {
     EnvironmentCollision,
 };
 
+struct ScheduleArcAttachmentContact {
+    std::string attached_entity;
+    std::string other_robot;
+    std::vector<std::string> other_links;
+};
+
 struct ScheduleArcMotion {
     std::size_t step_index = 0;
     std::size_t coupling_id = std::numeric_limits<std::size_t>::max();
@@ -35,6 +41,8 @@ struct ScheduleArcMotion {
     std::size_t end_t = 0;
     std::vector<std::string> moving_entities;
     std::vector<std::string> ignored_stationary_entities;
+    /// Explicit active-phase-only grasp contacts; never inherited by holds.
+    std::vector<ScheduleArcAttachmentContact> allowed_attachment_contacts;
 };
 
 struct ScheduleArcStationaryEntity {
@@ -43,6 +51,27 @@ struct ScheduleArcStationaryEntity {
     std::size_t end_t = 0;
     std::vector<ObstacleSphere> spheres;
     std::vector<ObstacleCylinder> cylinders;
+};
+
+/// A real robot held fixed, retaining its native collision and attachment model.
+/// Closed intervals cover the horizon; at a mode boundary incoming/outgoing
+/// interval sides are validated separately. A zero-length hold is a snapshot.
+struct ScheduleArcRobotHold {
+    std::string robot_name;
+    std::shared_ptr<RobotModel> model;
+    std::vector<double> configuration;
+    std::size_t start_t = 0;
+    std::size_t end_t = 0;
+    std::vector<std::string> attached_entities;
+    std::vector<std::string> ignored_stationary_entities;
+    std::optional<std::size_t> preceding_motion;
+    std::optional<std::size_t> following_motion;
+};
+
+struct ScheduleArcFullOccupancy {
+    std::size_t horizon = 0;
+    std::vector<std::string> robot_names;
+    std::vector<ScheduleArcRobotHold> holds;
 };
 
 struct ScheduleArcConflict {
@@ -55,6 +84,10 @@ struct ScheduleArcConflict {
     std::string stationary_entity;
     std::string label_i;
     std::string label_j;
+    std::optional<std::size_t> hold_i;
+    std::optional<std::size_t> hold_j;
+    /// Interior edge collision, as opposed to an immutable boundary state.
+    std::optional<std::size_t> segment_start_t;
 };
 
 std::string toString(ScheduleArcConflictType type);
@@ -62,10 +95,11 @@ std::string describeScheduleArcConflict(const ScheduleArcConflict &conflict);
 
 /// Schedule-aware ARC variant for optimistic task-motion schedules.
 ///
-/// Each motion has a local path and a global schedule interval. Conflict checks
-/// only compare motions that are active at a timestep and skip motions from the
-/// same coupling, assuming those local coupled plans are already internally
-/// valid. Stationary conflicts are repaired by adding the stationary entity as
+/// Each motion has a local path and a global schedule interval. Legacy clients
+/// compare active motions and trust coupled local plans. Explicit full-occupancy
+/// clients validate all robot holds, interval endpoints, and motion segments;
+/// coupling retains repair teams but never exempts robot pairs from validation.
+/// Stationary conflicts are repaired by adding the stationary entity as
 /// a static obstacle to the local subproblem. Supplied sparse paths are sampled
 /// using Path timestep metadata and normalized to the fixed schedule interval.
 /// Repairs retain coupled teams and use the current ARC repair engine and its
@@ -85,6 +119,14 @@ public:
 
     void setStationaryEntities(
         std::vector<ScheduleArcStationaryEntity> entities);
+    void setFullOccupancy(ScheduleArcFullOccupancy occupancy);
+    void clearFullOccupancy() { full_occupancy_.reset(); }
+    const std::optional<ScheduleArcFullOccupancy> &fullOccupancy() const {
+        return full_occupancy_;
+    }
+    /// Throws invalid_argument on missing coverage or inconsistent endpoints.
+    /// findFirstConflict and solve invoke this automatically in full mode.
+    void validateFullOccupancy() const;
     const std::vector<ScheduleArcStationaryEntity> &stationaryEntities() const {
         return stationary_entities_;
     }
@@ -126,6 +168,16 @@ private:
                           const std::string &entity);
     std::optional<ScheduleArcConflict> findFirstConflict(
         const std::function<bool()> &stop_requested, bool *stopped) const;
+    std::optional<ScheduleArcConflict> findFullOccupancyConflict(
+        const std::function<bool()> &stop_requested, bool *stopped) const;
+    bool clipToOccupancy(std::size_t timestep, std::size_t &lower,
+                         std::size_t &upper, bool segment_conflict) const;
+    std::vector<CollisionChecker::FixedRobot> fixedRobotsForWindow(
+        std::size_t begin_t, std::size_t end_t,
+        const std::vector<std::size_t> &motion_indices) const;
+    std::vector<CollisionChecker::RobotAttachmentContact> attachmentContactsForWindow(
+        std::size_t begin_t, std::size_t end_t,
+        const std::vector<std::size_t> &motion_indices) const;
 
     bool shouldSkipMovingPair(const ScheduleArcMotion &lhs,
                               const ScheduleArcMotion &rhs) const;
@@ -175,6 +227,7 @@ private:
 
     std::vector<ScheduleArcMotion> motions_;
     std::vector<ScheduleArcStationaryEntity> stationary_entities_;
+    std::optional<ScheduleArcFullOccupancy> full_occupancy_;
     FailureCallback failure_callback_;
     double local_solve_time_limit_ = 0.0;
     std::uint64_t conflicts_seen_ = 0;

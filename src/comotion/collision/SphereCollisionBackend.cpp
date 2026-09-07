@@ -101,7 +101,11 @@ double elapsedWallSeconds(const Clock::time_point &start) {
 class SphereCollisionBackend final : public CollisionBackend {
 public:
     std::unique_ptr<CollisionBackend> clone() const override {
-        return std::make_unique<SphereCollisionBackend>();
+        return std::make_unique<SphereCollisionBackend>(*this);
+    }
+    void setAttachmentContacts(
+        const std::vector<CollisionChecker::RobotAttachmentContact> &contacts) override {
+        attachment_contacts_ = contacts;
     }
 
     void onEnvironmentChanged(const std::vector<ObstacleSphere> &,
@@ -177,6 +181,41 @@ public:
                      const std::vector<double> &config_b) const override {
         auto spheres_a = robot_a.getCollisionSpheres(config_a);
         auto spheres_b = robot_b.getCollisionSpheres(config_b);
+        if (!attachment_contacts_.empty()) {
+            const auto bare_a = spheres_a.size() - (robot_a.attachment()
+                ? robot_a.attachment()->spheres.size() : 0);
+            const auto bare_b = spheres_b.size() - (robot_b.attachment()
+                ? robot_b.attachment()->spheres.size() : 0);
+            const auto permitted = [&](const RobotModel &owner,
+                                         const RobotModel &other,
+                                         int other_link) {
+                if (!owner.attachment() || other_link < 0 ||
+                    static_cast<std::size_t>(other_link) >= other.links().size())
+                    return false;
+                const auto &link = other.links()[other_link].name;
+                return std::any_of(attachment_contacts_.begin(), attachment_contacts_.end(),
+                    [&](const auto &contact) {
+                        return contact.owner.get() == &owner && contact.other.get() == &other &&
+                            contact.attached_entity == owner.attachment()->name &&
+                            std::find(contact.other_links.begin(), contact.other_links.end(), link)
+                                != contact.other_links.end();
+                    });
+            };
+            for (std::size_t i = 0; i < spheres_a.size(); ++i) {
+                for (std::size_t j = 0; j < spheres_b.size(); ++j) {
+                    if (i >= bare_a && j < bare_b &&
+                        permitted(robot_a, robot_b, spheres_b[j].link_index))
+                        continue;
+                    if (j >= bare_b && i < bare_a &&
+                        permitted(robot_b, robot_a, spheres_a[i].link_index))
+                        continue;
+                    if (spheresCollide(spheres_a[i].center, spheres_a[i].radius,
+                                       spheres_b[j].center, spheres_b[j].radius))
+                        return false;
+                }
+            }
+            return true;
+        }
         return areSphereSetsPairValid(spheres_a, spheres_b);
     }
 
@@ -395,8 +434,9 @@ public:
                             robots[j]->getCollisionSpheres(interp[j]);
                         mark_timestep(static_cast<std::size_t>(step));
                         ++last_work_stats_.robot_pair_checks_completed;
-                        if (!areSphereSetsPairValidExhaustive(spheres_i,
-                                                              spheres_j)) {
+                        if (attachment_contacts_.empty()
+                                ? !areSphereSetsPairValidExhaustive(spheres_i, spheres_j)
+                                : !isValidPair(*robots[i], interp[i], *robots[j], interp[j])) {
                             valid = false;
                         }
                     }
@@ -652,7 +692,7 @@ public:
         const std::vector<ObstacleCylinder> &,
         std::vector<std::size_t> *next_t_begin_by_robot_out,
         std::vector<std::size_t> *next_t_begin_by_pair_out) const override {
-        if (unique && options.conflict_find_parallel_workers > 1 &&
+        if (attachment_contacts_.empty() && unique && options.conflict_find_parallel_workers > 1 &&
             options.conflict_find_parallel_horizon > 0) {
             return findInterRobotPathConflictsCompositeScanParallel(
                 paths, robots, options, max_conflicts, on_conflict,
@@ -713,7 +753,9 @@ public:
                         continue;
                     const auto &config_i = configAt(paths[i], t);
                     const auto &config_j = configAt(paths[j], t);
-                    if (!areSphereSetsPairValid(spheresFor(i), spheresFor(j))) {
+                    if (attachment_contacts_.empty()
+                            ? !areSphereSetsPairValid(spheresFor(i), spheresFor(j))
+                            : !isValidPair(*robots[i], config_i, *robots[j], config_j)) {
                         const CompositeConflict conflict{
                             ConflictScope::InterRobot, static_cast<int>(i),
                             static_cast<int>(j), t, 0.0, ConflictKind::Vertex,
@@ -1295,6 +1337,7 @@ private:
 
 private:
     mutable ValidationWorkStats last_work_stats_;
+    std::vector<CollisionChecker::RobotAttachmentContact> attachment_contacts_;
 };
 
 } // namespace

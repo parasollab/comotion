@@ -65,17 +65,29 @@ std::string describeScheduleArcConflict(
     const ScheduleArcConflict &conflict) {
     std::ostringstream out;
     out << toString(conflict.type) << " at t=" << conflict.timestep;
+    const auto participant = [&](bool second) {
+        const auto hold = second ? conflict.hold_j : conflict.hold_i;
+        if (hold) {
+            out << "held robot " << (second ? conflict.moving_entity_j
+                                              : conflict.moving_entity_i);
+        } else {
+            out << "motion " << (second ? conflict.motion_j : conflict.motion_i)
+                << " (" << (second ? conflict.label_j : conflict.label_i) << ")";
+        }
+    };
     if (conflict.type == ScheduleArcConflictType::MovingCollision) {
-        out << " between motion " << conflict.motion_i << " ("
-            << conflict.label_i << ") and motion " << conflict.motion_j
-            << " (" << conflict.label_j << ")";
+        out << " between ";
+        participant(false);
+        out << " and ";
+        participant(true);
     } else if (conflict.type == ScheduleArcConflictType::StationaryCollision) {
-        out << " between motion " << conflict.motion_i << " ("
-            << conflict.label_i << ") and stationary entity "
-            << conflict.stationary_entity;
+        out << " between ";
+        participant(false);
+        out << " and stationary entity " << conflict.stationary_entity;
     } else {
-        out << " for motion " << conflict.motion_i << " ("
-            << conflict.label_i << ") against the problem environment";
+        out << " for ";
+        participant(false);
+        out << " against the problem environment";
     }
     return out.str();
 }
@@ -100,6 +112,106 @@ void ScheduleARC::setMotions(std::vector<ScheduleArcMotion> motions) {
 void ScheduleARC::setStationaryEntities(
     std::vector<ScheduleArcStationaryEntity> entities) {
     stationary_entities_ = std::move(entities);
+}
+
+void ScheduleARC::setFullOccupancy(ScheduleArcFullOccupancy occupancy) {
+    full_occupancy_ = std::move(occupancy);
+}
+
+void ScheduleARC::validateFullOccupancy() const {
+    if (!full_occupancy_)
+        return;
+    const auto &occupancy = *full_occupancy_;
+    const std::set<std::string> names(occupancy.robot_names.begin(),
+                                      occupancy.robot_names.end());
+    const auto fail = [](const std::string &reason) {
+        throw std::invalid_argument("ScheduleARC full occupancy: " + reason);
+    };
+    if (names.size() != occupancy.robot_names.size() || names.count(""))
+        fail("robot roster is duplicated or unnamed");
+    struct Span {
+        std::size_t begin, end;
+        std::vector<double> start, goal;
+    };
+    std::map<std::string, std::vector<Span>> spans;
+    const auto config_valid = [](const RobotModel &model,
+                                  const std::vector<double> &config) {
+        return config.size() == static_cast<std::size_t>(model.numJoints()) &&
+               std::all_of(config.begin(), config.end(),
+                           [](double value) { return std::isfinite(value); });
+    };
+    const auto same = [](const std::vector<double> &a,
+                          const std::vector<double> &b) {
+        if (a.size() != b.size())
+            return false;
+        for (std::size_t i = 0; i < a.size(); ++i)
+            if (std::abs(a[i] - b[i]) > 1e-8)
+                return false;
+        return true;
+    };
+    for (const auto &motion : motions_) {
+        if (!names.count(motion.robot_name) || !motion.model ||
+            motion.path.empty() || motion.start_t > motion.end_t ||
+            motion.end_t > occupancy.horizon)
+            fail("invalid or unregistered motion " + motion.label);
+        for (const auto &config : motion.path)
+            if (!config_valid(*motion.model, config))
+                fail("invalid configuration in " + motion.label);
+        for (const auto &contact : motion.allowed_attachment_contacts) {
+            if (!motion.model->attachment() ||
+                motion.model->attachment()->name != contact.attached_entity ||
+                !names.count(contact.other_robot) ||
+                contact.other_robot == motion.robot_name || contact.other_links.empty())
+                fail("invalid directed attachment contact in " + motion.label);
+        }
+        spans[motion.robot_name].push_back({motion.start_t, motion.end_t,
+                                            motion.path.front(), motion.path.back()});
+    }
+    for (const auto &hold : occupancy.holds) {
+        if (!names.count(hold.robot_name) || !hold.model ||
+            !config_valid(*hold.model, hold.configuration) ||
+            hold.start_t > hold.end_t || hold.end_t > occupancy.horizon)
+            fail("invalid or unregistered hold for " + hold.robot_name);
+        for (const auto &neighbor : {hold.preceding_motion, hold.following_motion}) {
+            if (neighbor && (*neighbor >= motions_.size() ||
+                             motions_[*neighbor].robot_name != hold.robot_name))
+                fail("hold neighbor belongs to another robot");
+        }
+        if (hold.preceding_motion &&
+            motions_[*hold.preceding_motion].end_t != hold.start_t)
+            fail("hold predecessor does not meet its interval");
+        if (hold.following_motion &&
+            motions_[*hold.following_motion].start_t != hold.end_t)
+            fail("hold successor does not meet its interval");
+        spans[hold.robot_name].push_back({hold.start_t, hold.end_t,
+                                        hold.configuration, hold.configuration});
+    }
+    for (const auto &name : names) {
+        auto &timeline = spans[name];
+        std::sort(timeline.begin(), timeline.end(), [](const Span &a, const Span &b) {
+            return std::tie(a.begin, a.end) < std::tie(b.begin, b.end);
+        });
+        if (timeline.empty() || timeline.front().begin != 0)
+            fail("missing initial occupancy for " + name);
+        std::size_t end = timeline.front().end;
+        auto endpoint = timeline.front().goal;
+        for (std::size_t i = 1; i < timeline.size(); ++i) {
+            const auto &span = timeline[i];
+            if (span.begin > end)
+                fail("gap in occupancy for " + name);
+            if (span.begin < end)
+                fail("overlapping occupancy for " + name);
+            if (!same(endpoint, span.start))
+                fail("discontinuous configuration for " + name);
+            end = span.end;
+            endpoint = span.goal;
+        }
+        if (end != occupancy.horizon)
+            fail("missing terminal occupancy for " + name);
+    }
+    for (const auto &entity : stationary_entities_)
+        if (entity.start_t > entity.end_t || entity.end_t > occupancy.horizon)
+            fail("invalid stationary interval for " + entity.name);
 }
 
 bool ScheduleARC::intervalContains(const ScheduleArcMotion &motion,
@@ -189,6 +301,8 @@ bool ScheduleARC::shouldSkipStationaryEntity(
 }
 
 std::size_t ScheduleARC::makespan() const {
+    if (full_occupancy_)
+        return full_occupancy_->horizon;
     std::size_t out = 0;
     for (const auto &motion : motions_)
         out = std::max(out, motion.end_t);
@@ -207,6 +321,10 @@ std::optional<ScheduleArcConflict> ScheduleARC::findFirstConflict(
         throw std::runtime_error("ScheduleARC requires a MultiRobotProblem");
     if (stopped)
         *stopped = false;
+    if (full_occupancy_) {
+        validateFullOccupancy();
+        return findFullOccupancyConflict(stop_requested, stopped);
+    }
 
     CollisionChecker checker(problem_->collisionChecker());
     const auto horizon = makespan();
@@ -319,6 +437,204 @@ std::optional<ScheduleArcConflict> ScheduleARC::findFirstConflict(
     return std::nullopt;
 }
 
+std::optional<ScheduleArcConflict> ScheduleARC::findFullOccupancyConflict(
+    const std::function<bool()> &stop_requested, bool *stopped) const {
+    const auto &occupancy = *full_occupancy_;
+    const auto unset = std::numeric_limits<std::size_t>::max();
+    struct Occupant {
+        std::string name;
+        const RobotModel *model;
+        std::vector<double> from, to;
+        std::size_t motion = std::numeric_limits<std::size_t>::max();
+        std::optional<std::size_t> hold;
+        std::vector<std::string> owned, ignored;
+    };
+    const auto belongs = [](std::size_t begin, std::size_t end,
+                              std::size_t t, bool outgoing) {
+        return begin == end ? t == begin
+                            : outgoing ? begin <= t && t < end
+                                       : begin < t && t <= end;
+    };
+    const auto occupants = [&](std::size_t t, bool outgoing) {
+        std::map<std::string, Occupant> selected;
+        for (std::size_t i = 0; i < motions_.size(); ++i) {
+            const auto &m = motions_[i];
+            if (!belongs(m.start_t, m.end_t, t, outgoing))
+                continue;
+            selected.emplace(m.robot_name, Occupant{m.robot_name, m.model.get(),
+                configAt(m, t), configAt(m, outgoing ? std::min(t + 1, m.end_t) : t),
+                i, {}, m.moving_entities, m.ignored_stationary_entities});
+        }
+        for (std::size_t i = 0; i < occupancy.holds.size(); ++i) {
+            const auto &h = occupancy.holds[i];
+            if (!belongs(h.start_t, h.end_t, t, outgoing))
+                continue;
+            // Endpoint snapshots complement the motion's opposite mode, not
+            // its interior. Never turn an expired coupled phase into a hold.
+            selected.emplace(h.robot_name, Occupant{h.robot_name, h.model.get(),
+                h.configuration, h.configuration, unset, i,
+                h.attached_entities, h.ignored_stationary_entities});
+        }
+        // A pure-motion timeline need not duplicate initial/final snapshots.
+        for (const auto &name : occupancy.robot_names) {
+            if (selected.count(name))
+                continue;
+            for (std::size_t i = 0; i < motions_.size(); ++i) {
+                const auto &m = motions_[i];
+                if (m.robot_name == name && m.start_t <= t && t <= m.end_t) {
+                    selected.emplace(name, Occupant{name, m.model.get(),
+                        configAt(m, t), configAt(m, t), i, {},
+                        m.moving_entities, m.ignored_stationary_entities});
+                    break;
+                }
+            }
+            if (!selected.count(name)) {
+                for (std::size_t i = 0; i < occupancy.holds.size(); ++i) {
+                    const auto &h = occupancy.holds[i];
+                    if (h.robot_name == name && h.start_t <= t && t <= h.end_t) {
+                        selected.emplace(name, Occupant{name, h.model.get(),
+                            h.configuration, h.configuration, unset, i,
+                            h.attached_entities, h.ignored_stationary_entities});
+                        break;
+                    }
+                }
+            }
+        }
+        std::vector<Occupant> result;
+        for (auto &[name, value] : selected)
+            result.push_back(std::move(value));
+        return result;
+    };
+    CollisionChecker checker(problem_->collisionChecker());
+    // Holds are immutable. Cache their state checks, never motion checks:
+    // waiting for another timestep does not create a new configuration.
+    std::set<std::size_t> environment_checked_holds;
+    std::set<std::pair<std::size_t, std::size_t>> entity_checked_holds;
+    std::set<std::pair<std::size_t, std::size_t>> checked_hold_pairs;
+    std::vector<CollisionChecker> entity_checkers;
+    entity_checkers.reserve(stationary_entities_.size());
+    for (const auto &entity : stationary_entities_) {
+        entity_checkers.emplace_back(checker.backend());
+        entity_checkers.back().setObstacles(entity.spheres);
+        entity_checkers.back().setCylinderObstacles(entity.cylinders);
+    }
+    const auto make_conflict = [&](const Occupant &a, std::size_t timestep) {
+        ScheduleArcConflict result;
+        result.timestep = timestep;
+        result.motion_i = a.motion;
+        result.hold_i = a.hold;
+        result.moving_entity_i = a.name;
+        result.label_i = a.motion < motions_.size() ? motions_[a.motion].label
+                                                   : a.name + "/hold";
+        return result;
+    };
+    for (std::size_t t = 0; t <= occupancy.horizon; ++t) {
+        for (bool outgoing : {false, true}) {
+            if (stop_requested && stop_requested()) {
+                if (stopped)
+                    *stopped = true;
+                return std::nullopt;
+            }
+            const auto world = occupants(t, outgoing);
+            const bool segment = outgoing && t < occupancy.horizon;
+            // Verify exclusive attachment ownership within each actual mode.
+            std::map<std::string, std::string> owners;
+            for (const auto &a : world) {
+                if (a.model->attachment()) {
+                    const auto &entity = a.model->attachment()->name;
+                    const auto [entry, inserted] = owners.emplace(entity, a.name);
+                    if (!inserted && entry->second != a.name)
+                        throw std::invalid_argument(
+                            "ScheduleARC full occupancy: duplicate ownership of " + entity);
+                }
+            }
+            for (std::size_t i = 0; i < world.size(); ++i) {
+                const auto &a = world[i];
+                const bool moving_segment = segment && a.from != a.to;
+                const bool environment_state_valid =
+                    (a.hold && environment_checked_holds.count(*a.hold)) ||
+                    checker.isValidSingleFull(*a.model, a.from);
+                if (!environment_state_valid ||
+                    (moving_segment && !checker.isMotionValid(*a.model, a.from, a.to))) {
+                    auto conflict = make_conflict(a, environment_state_valid ? t + 1 : t);
+                    if (environment_state_valid)
+                        conflict.segment_start_t = t;
+                    conflict.type = ScheduleArcConflictType::EnvironmentCollision;
+                    conflict.stationary_entity = "problem_environment";
+                    return conflict;
+                }
+                if (a.hold)
+                    environment_checked_holds.insert(*a.hold);
+                for (std::size_t entity_index = 0;
+                     entity_index < stationary_entities_.size(); ++entity_index) {
+                    const auto &entity = stationary_entities_[entity_index];
+                    if (!belongs(entity.start_t, entity.end_t, t, outgoing) ||
+                        hasEntity(a.owned, entity.name) || hasEntity(a.ignored, entity.name))
+                        continue;
+                    const auto &entity_checker = entity_checkers[entity_index];
+                    const bool entity_state_valid =
+                        (a.hold && entity_checked_holds.count({*a.hold, entity_index})) ||
+                        entity_checker.isValidSingle(*a.model, a.from);
+                    if (!entity_state_valid ||
+                        (moving_segment && !entity_checker.isMotionValid(*a.model, a.from, a.to))) {
+                        auto conflict = make_conflict(a, entity_state_valid ? t + 1 : t);
+                        if (entity_state_valid)
+                            conflict.segment_start_t = t;
+                        conflict.type = ScheduleArcConflictType::StationaryCollision;
+                        conflict.stationary_entity = entity.name;
+                        return conflict;
+                    }
+                    if (a.hold)
+                        entity_checked_holds.emplace(*a.hold, entity_index);
+                }
+                for (std::size_t j = i + 1; j < world.size(); ++j) {
+                    const auto &b = world[j];
+                    const bool pair_moves = segment && (a.from != a.to || b.from != b.to);
+                    if (a.hold && b.hold && checked_hold_pairs.count({*a.hold, *b.hold}))
+                        continue;
+                    CompositePathValidationOptions pair_options;
+                    pair_options.check_environment = false;
+                    std::vector<std::size_t> contact_team;
+                    for (const auto index : {a.motion, b.motion})
+                        if (index < motions_.size() &&
+                            belongs(motions_[index].start_t, motions_[index].end_t, t, outgoing))
+                            contact_team.push_back(index);
+                    const auto contacts = attachmentContactsForWindow(t, t, contact_team);
+                    const CollisionChecker *pair_checker = &checker;
+                    std::optional<CollisionChecker> contact_checker;
+                    if (!contacts.empty() || !checker.attachmentContacts().empty()) {
+                        contact_checker.emplace(checker);
+                        contact_checker->setAttachmentContacts(contacts);
+                        pair_checker = &*contact_checker;
+                    }
+                    const bool state_valid = pair_checker->isValidPair(
+                        *a.model, a.from, *b.model, b.from);
+                    if (!state_valid || (pair_moves && !pair_checker->isCompositeMotionValid(
+                            {a.model, b.model}, {a.from, b.from}, {a.to, b.to}, pair_options))) {
+                        // Keep the repairable moving participant in motion_i.
+                        const bool swap = a.motion == unset && b.motion != unset;
+                        const auto &first = swap ? b : a;
+                        const auto &second = swap ? a : b;
+                        auto conflict = make_conflict(first, state_valid ? t + 1 : t);
+                        if (state_valid)
+                            conflict.segment_start_t = t;
+                        conflict.type = ScheduleArcConflictType::MovingCollision;
+                        conflict.motion_j = second.motion;
+                        conflict.hold_j = second.hold;
+                        conflict.moving_entity_j = second.name;
+                        conflict.label_j = second.motion < motions_.size()
+                            ? motions_[second.motion].label : second.name + "/hold";
+                        return conflict;
+                    }
+                    if (a.hold && b.hold)
+                        checked_hold_pairs.emplace(*a.hold, *b.hold);
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 std::vector<std::size_t>
 ScheduleARC::motionsForConflict(const ScheduleArcConflict &conflict) const {
     std::vector<std::size_t> out;
@@ -404,6 +720,9 @@ ScheduleARC::initialRepairWindow(
         lower = std::max(lower, motion.start_t);
         upper = std::min(upper, motion.end_t);
     }
+    if (!clipToOccupancy(conflict.timestep, lower, upper,
+                         conflict.segment_start_t.has_value()))
+        return std::nullopt;
     if (lower >= upper)
         return std::nullopt;
 
@@ -423,6 +742,82 @@ ScheduleARC::initialRepairWindow(
     if (window.begin_t >= window.end_t)
         return std::nullopt;
     return window;
+}
+
+bool ScheduleARC::clipToOccupancy(std::size_t timestep, std::size_t &lower,
+                                  std::size_t &upper, bool segment_conflict) const {
+    if (!full_occupancy_)
+        return true;
+    const auto boundary = [&](std::size_t t) {
+        if (t < timestep)
+            lower = std::max(lower, t);
+        else if (t > timestep)
+            upper = std::min(upper, t);
+        else if (segment_conflict)
+            upper = std::min(upper, t);
+    };
+    for (const auto &motion : motions_) {
+        boundary(motion.start_t);
+        boundary(motion.end_t);
+        if (!segment_conflict &&
+            (motion.start_t == timestep || motion.end_t == timestep))
+            return false; // Repair cannot change an immutable mode endpoint.
+    }
+    for (const auto &hold : full_occupancy_->holds) {
+        boundary(hold.start_t);
+        boundary(hold.end_t);
+        if (!segment_conflict &&
+            (hold.start_t == timestep || hold.end_t == timestep))
+            return false;
+    }
+    for (const auto &entity : stationary_entities_) {
+        boundary(entity.start_t);
+        boundary(entity.end_t);
+        if (!segment_conflict &&
+            (entity.start_t == timestep || entity.end_t == timestep))
+            return false;
+    }
+    return lower < upper;
+}
+
+std::vector<CollisionChecker::FixedRobot> ScheduleARC::fixedRobotsForWindow(
+    std::size_t begin_t, std::size_t end_t,
+    const std::vector<std::size_t> &motion_indices) const {
+    auto result = problem_->collisionChecker().fixedRobots();
+    if (!full_occupancy_)
+        return result;
+    std::set<std::string> team;
+    for (const auto index : motion_indices)
+        team.insert(motions_.at(index).robot_name);
+    std::set<std::string> added;
+    for (const auto &hold : full_occupancy_->holds) {
+        if (!team.count(hold.robot_name) && hold.start_t <= begin_t &&
+            end_t <= hold.end_t && added.insert(hold.robot_name).second)
+            result.push_back({hold.model, hold.configuration});
+    }
+    return result;
+}
+
+std::vector<CollisionChecker::RobotAttachmentContact>
+ScheduleARC::attachmentContactsForWindow(
+    std::size_t begin_t, std::size_t end_t,
+    const std::vector<std::size_t> &motion_indices) const {
+    std::vector<CollisionChecker::RobotAttachmentContact> contacts;
+    for (const auto index : motion_indices) {
+        const auto &owner = motions_.at(index);
+        if (owner.start_t > begin_t || owner.end_t < end_t)
+            continue;
+        for (const auto &rule : owner.allowed_attachment_contacts) {
+            for (const auto other_index : motion_indices) {
+                const auto &other = motions_.at(other_index);
+                if (other.robot_name == rule.other_robot &&
+                    other.start_t <= begin_t && other.end_t >= end_t)
+                    contacts.push_back({owner.model, other.model,
+                                        rule.attached_entity, rule.other_links});
+            }
+        }
+    }
+    return contacts;
 }
 
 std::vector<ObstacleSphere>
@@ -499,6 +894,9 @@ bool ScheduleARC::planMissingMotionPath(ScheduleArcMotion &motion,
     local_problem->setVmax(problem_->vmax());
     local_problem->setObstacles(problem_->collisionChecker().obstacles());
     local_problem->setCylinderObstacles(problem_->collisionChecker().cylinders());
+    const auto motion_index = static_cast<std::size_t>(&motion - motions_.data());
+    local_problem->setFixedRobots(fixedRobotsForWindow(
+        motion.start_t, motion.end_t, {motion_index}));
     local_problem->collisionChecker().setVampValidationStrategy(
         problem_->collisionChecker().vampValidationStrategy());
     local_problem->addRobot(motion.model, motion.start, motion.goal);
@@ -533,6 +931,10 @@ bool ScheduleARC::solveWindow(
         problem_->collisionChecker().backend());
     local_problem->setResolution(problem_->resolution());
     local_problem->setVmax(problem_->vmax());
+    local_problem->setFixedRobots(fixedRobotsForWindow(
+        window.begin_t, window.end_t, motion_indices));
+    local_problem->collisionChecker().setAttachmentContacts(
+        attachmentContactsForWindow(window.begin_t, window.end_t, motion_indices));
     local_problem->collisionChecker().setVampValidationStrategy(
         problem_->collisionChecker().vampValidationStrategy());
 
@@ -687,6 +1089,9 @@ bool ScheduleARC::repairConflict(
             lower = std::max(lower, motion.start_t);
             upper = std::min(upper, motion.end_t);
         }
+        if (!clipToOccupancy(conflict.timestep, lower, upper,
+                             conflict.segment_start_t.has_value()))
+            return false;
         if (lower >= upper || conflict.timestep < lower ||
             conflict.timestep > upper) {
             return false;
@@ -899,6 +1304,8 @@ void ScheduleARC::updateStats(bool solved) {
     stats["solved"] = solved;
     stats["num_motions"] = motions_.size();
     stats["num_stationary_entities"] = stationary_entities_.size();
+    stats["full_occupancy"] = full_occupancy_.has_value();
+    stats["num_robot_holds"] = full_occupancy_ ? full_occupancy_->holds.size() : 0;
     stats["num_conflicts"] = conflicts_seen_;
     stats["num_moving_conflicts"] = moving_conflicts_seen_;
     stats["num_stationary_conflicts"] = stationary_conflicts_seen_;

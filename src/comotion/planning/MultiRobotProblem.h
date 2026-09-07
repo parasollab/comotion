@@ -32,6 +32,9 @@ public:
 
     void setObstacles(const std::vector<ObstacleSphere> &obstacles);
     void setCylinderObstacles(const std::vector<ObstacleCylinder> &cylinders);
+    void setFixedRobots(std::vector<CollisionChecker::FixedRobot> robots) {
+        cc_.setFixedRobots(std::move(robots));
+    }
 
     int numRobots() const { return static_cast<int>(robots_.size()); }
     const RobotInstance &robot(int i) const { return robots_[i]; }

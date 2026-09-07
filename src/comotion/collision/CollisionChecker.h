@@ -17,6 +17,28 @@ class CollisionChecker {
 public:
     enum class Backend { Spheres, Fcl, Vamp };
 
+    /// Immutable articulated collision context, not additional planning DOFs.
+    struct FixedRobot {
+        std::shared_ptr<RobotModel> model;
+        std::vector<double> configuration;
+    };
+    /// A directed contact exception for one attached object and specified
+    /// links of the other robot. Bare robot pairs are never exempted.
+    struct RobotAttachmentContact {
+        std::shared_ptr<RobotModel> owner;
+        std::shared_ptr<RobotModel> other;
+        std::string attached_entity;
+        std::vector<std::string> other_links;
+    };
+    /// Currently supported by the native sphere backend only. Other backends
+    /// reject nonempty allowances explicitly rather than downgrade geometry.
+    void setAttachmentContacts(std::vector<RobotAttachmentContact> contacts);
+    const std::vector<RobotAttachmentContact> &attachmentContacts() const {
+        return attachment_contacts_;
+    }
+    void setFixedRobots(std::vector<FixedRobot> robots);
+    const std::vector<FixedRobot> &fixedRobots() const { return fixed_robots_; }
+
     CollisionChecker();
     explicit CollisionChecker(Backend backend);
     ~CollisionChecker();
@@ -120,6 +142,12 @@ private:
     Backend backend_;
     std::vector<ObstacleSphere> obstacles_;
     std::vector<ObstacleCylinder> cylinders_;
+    std::vector<FixedRobot> fixed_robots_;
+    std::vector<RobotAttachmentContact> attachment_contacts_;
+    std::optional<CompositeConflict> fixedPathConflict(
+        const std::vector<Path> &paths,
+        const std::vector<const RobotModel *> &robots,
+        const CompositePathValidationOptions &options) const;
 };
 
 } // namespace comotion

@@ -386,7 +386,7 @@ MultiRobotProblem::createSpaceInfo(int robot_idx) const {
 
 #if COMOTION_HAVE_VAMP
     if (cc_.backend() == CollisionChecker::Backend::Vamp &&
-        !robot->hasAttachment()) {
+        !robot->hasAttachment() && cc_.fixedRobots().empty()) {
         switch (robot->robotFamily()) {
         case RobotModel::RobotFamily::Sphere:
             configureVampSphereRobot(*robot, bounds);
@@ -423,6 +423,17 @@ MultiRobotProblem::createSpaceInfo(int robot_idx) const {
                 config[static_cast<std::size_t>(i)] = rv->values[i];
             return checker->isValidSingleFull(*robot, config);
         });
+
+    if (!cc_.fixedRobots().empty()) {
+        // The native VAMP environment-only motion validator cannot represent
+        // other articulated models. Keep the selected collision backend and
+        // route edges (including simplifier shortcuts) through the checker.
+        auto infos = std::make_shared<
+            std::vector<CompositeMotionValidator::RobotInfo>>();
+        infos->push_back({robot, 0, ndof});
+        si->setMotionValidator(std::make_shared<CompositeMotionValidator>(
+            si, infos, checker, resolution_, vmax_));
+    }
 
     si->setup();
     return si;

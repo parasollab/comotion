@@ -928,6 +928,9 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
         // Build local subproblem
         auto sub_problem = std::make_shared<MultiRobotProblem>(
             problem_->collisionChecker().backend());
+        sub_problem->setFixedRobots(problem_->collisionChecker().fixedRobots());
+        sub_problem->collisionChecker().setAttachmentContacts(
+            problem_->collisionChecker().attachmentContacts());
         sub_problem->setObstacles(
             std::vector<ObstacleSphere>(
                 problem_->collisionChecker().obstacles().begin(),
