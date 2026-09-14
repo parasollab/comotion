@@ -127,7 +127,7 @@ struct AppOptions {
     std::string arc_local_prioritized_rewiring = "knearest";
     bool arc_local_prioritized_persist_at_goal = false;
     std::uint64_t ao_arc_local_bound_epsilon_timesteps = 1;
-    bool ao_arc_selective_replanning = true;
+    bool ao_arc_selective_replanning = false;
     bool ao_arc_selective_initial_conflict_scan = true;
     std::size_t ao_arc_repair_history_replanning_depth = 0;
     double ao_arc_random_full_restart_probability = 0.0;
@@ -952,11 +952,11 @@ void printUsage(const char *prog) {
         << "  --arc-local-prioritized-return-first-solution <0|1> (default: 1)\n"
         << "  --arc-local-prioritized-rewiring <off|radius|knearest> (default: knearest)\n"
         << "  --arc-local-prioritized-persist-at-goal / --no-arc-local-prioritized-persist-at-goal\n"
-        << "  --ao-arc-local-bound-epsilon-timesteps <n> (default: 1; 0 disables local reduction; reuse still tightens by one tick)\n"
-        << "  --ao-arc-selective-replanning / --no-ao-arc-selective-replanning (default: on)\n"
+        << "  --ao-arc-local-bound-epsilon-timesteps <n> (default: 1; 0 disables local reduction; selective reuse still tightens by one tick)\n"
+        << "  --ao-arc-selective-replanning / --no-ao-arc-selective-replanning (default: off)\n"
         << "  --ao-arc-selective-initial-conflict-scan / --no-ao-arc-selective-initial-conflict-scan (default: on)\n"
-        << "  --ao-arc-repair-history-replanning-depth <n> (default: 0; 1 selects direct repair partners)\n"
-        << "  --ao-arc-random-full-restart-probability <p> (default: 0; p must be in [0,1])\n"
+        << "  --ao-arc-repair-history-replanning-depth <n> (default: 0; requires selective replanning; 1 selects direct repair partners)\n"
+        << "  --ao-arc-random-full-restart-probability <p> (default: 0; requires selective replanning; p must be in [0,1])\n"
         << "  --ao-arc-expand-replanning-from-repair-history / --no-ao-arc-expand-replanning-from-repair-history (legacy aliases for depth 1/0)\n"
         << "  --cooperative-rrt-worker-threads <n>\n"
         << "  --or-parallel-worker-processes <n>\n"

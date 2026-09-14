@@ -16,18 +16,21 @@ CoMotion 0.1.x:
 - Seeding helpers: `PlanningRng`, `PlanningSeed`
 - Primary planners: `ARC`, `AOARC`
 
-`AOARC` reuses incumbent paths that already satisfy its next discrete reuse
-threshold and skips the initial conflict scan for unchanged/unchanged robot
-pairs by default. These optimizations are independently configurable with
-`setSelectiveBoundedReplanning(bool)` and
-`setSelectiveInitialConflictScan(bool)`. The inclusive reuse threshold is
+`AOARC` replans every robot from scratch on each bounded ARC attempt by
+default. Incumbent-path reuse is an opt-in optimization configured with
+`setSelectiveBoundedReplanning(true)`. When enabled, paths that already satisfy
+the next discrete reuse threshold are retained. The independently configurable
+`setSelectiveInitialConflictScan(bool)` optimization then skips pairs of
+unchanged robots; it remains enabled by default but naturally skips no pairs
+when every path is replanned. The inclusive reuse threshold is
 `B - max(epsilon, 1 timestep)`, with saturating subtraction; replanned paths
 continue to use Bounded ARC's global bound `B`.
+When selective replanning is enabled,
 `setRepairHistoryReplanningDepth(size_t)` additionally replans robots connected
 to a bound violator through accepted incumbent repairs: depth 0 is
 violators-only, depth 1 adds direct repair partners, and higher depths expand
-breadth-first. `setRandomFullRestartProbability(double)` independently chooses
-a deterministic, seed-replayable full restart for each bounded call, allowing
+breadth-first. `setRandomFullRestartProbability(double)` can choose a
+deterministic, seed-replayable full restart for each bounded call, allowing
 selective AO-ARC to escape an incumbent path basin. If that restart improves
 the incumbent, its repair history replaces the discarded paths' history;
 selective improvements continue to append history. The probability defaults

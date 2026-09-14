@@ -62,7 +62,7 @@ PAPER_VARIANTS: dict[str, PlannerVariant] = {
         "ao_arc",
         (
             "--arc-local-composite-use-makespan-metric",
-            "--ao-arc-selective-replanning",
+            "--no-ao-arc-selective-replanning",
             "--ao-arc-selective-initial-conflict-scan",
             "--ao-arc-repair-history-replanning-depth",
             "0",

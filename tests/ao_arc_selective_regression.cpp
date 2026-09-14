@@ -115,8 +115,8 @@ bool samePath(const comotion::Path &lhs, const comotion::Path &rhs) {
 
 bool testAOArcToggleDefaultsAndRoundTrips() {
     AOArcProbe planner;
-    if (!expectTrue("selective bounded replanning defaults on",
-                    planner.selectiveBoundedReplanning()))
+    if (!expectTrue("selective bounded replanning defaults off",
+                    !planner.selectiveBoundedReplanning()))
         return false;
     if (!expectTrue("selective initial conflict scan defaults on",
                     planner.selectiveInitialConflictScan()))
@@ -131,12 +131,17 @@ bool testAOArcToggleDefaultsAndRoundTrips() {
                     planner.randomFullRestartProbability() == 0.0))
         return false;
 
-    planner.setSelectiveBoundedReplanning(false);
-    if (!expectTrue("selective bounded replanning setter disables",
-                    !planner.selectiveBoundedReplanning()))
+    planner.setSelectiveBoundedReplanning(true);
+    if (!expectTrue("selective bounded replanning setter enables",
+                    planner.selectiveBoundedReplanning()))
         return false;
     if (!expectTrue("bounded replanning setter leaves scan toggle unchanged",
                     planner.selectiveInitialConflictScan()))
+        return false;
+
+    planner.setSelectiveBoundedReplanning(false);
+    if (!expectTrue("selective bounded replanning setter disables",
+                    !planner.selectiveBoundedReplanning()))
         return false;
 
     planner.setSelectiveInitialConflictScan(false);

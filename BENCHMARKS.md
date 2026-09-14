@@ -160,10 +160,11 @@ python3 benchmarks/scripts/run_param_sweep.py \
 
 The configuration compares full restart, depths 0/1/2 without random restart,
 depths 0/1/2 with a 25% per-bounded-call full-restart probability, and depth 0
-with a 50% probability. The AO-ARC paper runner explicitly selects depth 0 and
-probability 0 so its historical baseline remains unchanged. The legacy
-one-hop-only diagnostic configuration remains available as
-`panda_cage_n4_ao_arc_repair_history_replanning.json`.
+with a 50% probability. Full replanning is AO-ARC's default; selective reuse is
+opt-in. The AO-ARC paper runner explicitly disables selective replanning and
+selects depth 0 and probability 0 so its historical baseline remains
+unchanged. The legacy one-hop-only diagnostic configuration remains available
+as `panda_cage_n4_ao_arc_repair_history_replanning.json`.
 
 Validate the exact 400-trial matrix and generate its paired summaries and
 plots with:

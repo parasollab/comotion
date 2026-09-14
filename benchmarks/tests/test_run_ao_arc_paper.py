@@ -114,6 +114,9 @@ class AoArcPaperRunnerTests(unittest.TestCase):
             "--arc-local-composite-use-makespan-metric", commands["AO-ARC"]
         )
         ao_arc_command = commands["AO-ARC"]
+        self.assertIn("--no-ao-arc-selective-replanning", ao_arc_command)
+        self.assertNotIn("--ao-arc-selective-replanning", ao_arc_command)
+        self.assertIn("--ao-arc-selective-initial-conflict-scan", ao_arc_command)
         self.assertEqual(
             ao_arc_command[
                 ao_arc_command.index(

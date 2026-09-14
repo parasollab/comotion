@@ -355,6 +355,7 @@ bool testAOARCSmokeRecordsFirstSolution() {
     planner.setInitialWindow(4);
     planner.setExpansionStep(4);
     planner.setLocalCompositeRrtMaxSamples(200);
+    planner.setSelectiveBoundedReplanning(true);
     planner.setRepairHistoryReplanningDepth(2);
     planner.setRandomFullRestartProbability(1.0);
     const auto status = planner.solve(0.5);
@@ -406,6 +407,44 @@ bool testAOARCSmokeRecordsFirstSolution() {
     return true;
 }
 
+bool testAOARCDefaultReplansAllPaths() {
+    comotion::seedOmplGlobalFromUserPlanningSeed(17);
+
+    comotion::AOARC planner;
+    planner.setProblem(makeParallelSphereProblem());
+    planner.setInitialWindow(4);
+    planner.setExpansionStep(4);
+    planner.setLocalCompositeRrtMaxSamples(200);
+    // Adjunct selective-mode settings do not opt into incumbent-path reuse.
+    planner.setRepairHistoryReplanningDepth(2);
+    planner.setRandomFullRestartProbability(1.0);
+    const auto status = planner.solve(0.5);
+    if (!expectTrue("default AOARC returns exact solution",
+                    status == ob::PlannerStatus::EXACT_SOLUTION))
+        return false;
+
+    const auto stats = planner.plannerStatsJson();
+    if (!expectTrue(
+            "default AOARC records full bounded replanning",
+            stats["selective_bounded_replanning"] == false &&
+                stats["num_bounded_attempts"].get<std::uint64_t>() > 0 &&
+                stats["num_random_full_restarts"] == 0 &&
+                stats["total_paths_reused"] == 0 &&
+                stats["total_initial_conflict_pairs_skipped"] == 0))
+        return false;
+
+    for (const auto &attempt : stats["bounded_attempts"]) {
+        if (!expectTrue(
+                "default bounded attempts start from scratch",
+                attempt["random_full_restart"] == false &&
+                    attempt["selective_replanning_applied"] == false &&
+                    attempt["num_paths_reused"] == 0 &&
+                    attempt["num_conflict_pairs_skipped"] == 0))
+            return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -419,5 +458,6 @@ int main() {
     ok = testBoundedSingleRobotAOXRRTConnect() && ok;
     ok = testBoundedCompositeAOXRRTConnect() && ok;
     ok = testAOARCSmokeRecordsFirstSolution() && ok;
+    ok = testAOARCDefaultReplansAllPaths() && ok;
     return ok ? 0 : 1;
 }

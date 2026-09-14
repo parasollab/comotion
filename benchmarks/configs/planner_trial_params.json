@@ -35,7 +35,7 @@
   },
   "planners": {
     "ao_arc": {
-      "ao_arc_selective_replanning": true,
+      "ao_arc_selective_replanning": false,
       "ao_arc_selective_initial_conflict_scan": true,
       "ao_arc_repair_history_replanning_depth": 0,
       "ao_arc_random_full_restart_probability": 0.0

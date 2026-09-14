@@ -255,6 +255,21 @@ class PlannerTrialRunnerTest(unittest.TestCase):
             ),
         )
 
+    def test_ao_arc_default_profile_replans_every_path(self) -> None:
+        param_doc = runner.read_json_file(
+            REPO_ROOT / "benchmarks" / "configs" / "planner_trial_params.json"
+        )
+        params = runner.resolve_planner_params(
+            param_doc,
+            scenario=runner.SCENARIOS["panda_cage"],
+            num_robots=4,
+            method="ao_arc",
+        )
+        self.assertFalse(params["ao_arc_selective_replanning"])
+        args = runner.planner_params_to_args(params)
+        self.assertIn("--no-ao-arc-selective-replanning", args)
+        self.assertNotIn("--ao-arc-selective-replanning", args)
+
     def test_ao_arc_history_depth_and_random_restart_map_to_values(self) -> None:
         self.assertEqual(
             runner.planner_params_to_args(

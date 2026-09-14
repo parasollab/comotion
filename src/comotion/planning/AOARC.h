@@ -19,7 +19,9 @@ public:
     std::string name() const override { return "AOARC"; }
 
     /// Reuse incumbent paths that satisfy the next strict reuse threshold.
-    /// Replanned paths retain Bounded ARC's global bound. Enabled by default.
+    /// Replanned paths retain Bounded ARC's global bound. Disabled by default
+    /// so each bounded ARC attempt replans every robot unless explicitly
+    /// enabled.
     void setSelectiveBoundedReplanning(bool enabled) {
         selective_bounded_replanning_ = enabled;
     }
@@ -40,7 +42,8 @@ public:
     /// Also replan robots connected to an original bound violator by at most
     /// `depth` accepted repair-history edges. Zero disables expansion, one
     /// preserves the original direct-partner behavior, and larger values
-    /// expand one breadth-first layer at a time. Defaults to zero.
+    /// expand one breadth-first layer at a time. This only applies when
+    /// selective bounded replanning is enabled. Defaults to zero.
     void setRepairHistoryReplanningDepth(std::size_t depth) {
         repair_history_replanning_depth_ = depth;
     }
@@ -90,7 +93,7 @@ private:
     static nlohmann::json
     solutionEventsJson(const std::vector<aorrtc::SolutionEvent> &events);
 
-    bool selective_bounded_replanning_ = true;
+    bool selective_bounded_replanning_ = false;
     bool selective_initial_conflict_scan_ = true;
     std::size_t repair_history_replanning_depth_ = 0;
     double random_full_restart_probability_ = 0.0;
