@@ -302,8 +302,12 @@ ompl::base::PlannerStatus CompositeRRT::solve(double timeLimit) {
     if (raw_status == ob::PlannerStatus::APPROXIMATE_SOLUTION)
         exported_status = ob::PlannerStatus::TIMEOUT;
     std::uint64_t simplify_wall_ns = 0;
+    bool simplified_timestep_path_valid = false;
+    bool unsimplified_timestep_path_valid = false;
+    bool used_unsimplified_fallback = false;
 
     if (raw_status == ob::PlannerStatus::EXACT_SOLUTION) {
+        const og::PathGeometric unsimplified_path(setup.getSolutionPath());
         if (simplify_solution_) {
             const auto simplify_start = Clock::now();
             auto simplifier = std::make_shared<detail::SeededPathSimplifier>(
@@ -313,13 +317,45 @@ ompl::base::PlannerStatus CompositeRRT::solve(double timeLimit) {
                                         simplification_options_);
             simplify_wall_ns = elapsedNanoseconds(simplify_start);
         }
-        auto &path = setup.getSolutionPath();
-        path.interpolate();
 
-        solution_paths_ = splitCompositePathToRobotPaths(path, *problem_,
-                                                         indices,
-                                                         "CompositeRRT");
-        setSolutionMetricsFromPaths(solution_paths_);
+        std::vector<const RobotModel *> local_robots;
+        local_robots.reserve(indices.size());
+        for (const int index : indices)
+            local_robots.push_back(problem_->robot(index).model.get());
+
+        const auto export_and_validate = [&](og::PathGeometric path) {
+            path.interpolate();
+            auto paths = splitCompositePathToRobotPaths(
+                path, *problem_, indices, "CompositeRRT");
+            CompositePathValidationOptions validation_options;
+            validation_options.check_environment = true;
+            const bool valid =
+                problem_->collisionChecker().validateCompositePaths(
+                    paths, local_robots, validation_options);
+            return std::make_pair(std::move(paths), valid);
+        };
+
+        auto [candidate_paths, candidate_valid] =
+            export_and_validate(setup.getSolutionPath());
+        simplified_timestep_path_valid = candidate_valid;
+        if (candidate_valid) {
+            solution_paths_ = std::move(candidate_paths);
+        } else if (simplify_solution_) {
+            auto [fallback_paths, fallback_valid] =
+                export_and_validate(unsimplified_path);
+            unsimplified_timestep_path_valid = fallback_valid;
+            if (fallback_valid) {
+                solution_paths_ = std::move(fallback_paths);
+                used_unsimplified_fallback = true;
+            }
+        }
+
+        if (solution_paths_.empty()) {
+            exported_status = ob::PlannerStatus::TIMEOUT;
+            clearSolutionMetrics();
+        } else {
+            setSolutionMetricsFromPaths(solution_paths_);
+        }
     }
 
     nlohmann::json stats = nlohmann::json::object();
@@ -327,6 +363,11 @@ ompl::base::PlannerStatus CompositeRRT::solve(double timeLimit) {
     stats["simplify_wall_seconds"] =
         static_cast<double>(simplify_wall_ns) * 1e-9;
     stats["simplify_solution"] = simplify_solution_;
+    stats["simplified_timestep_path_valid"] =
+        simplified_timestep_path_valid;
+    stats["unsimplified_timestep_path_valid"] =
+        unsimplified_timestep_path_valid;
+    stats["used_unsimplified_fallback"] = used_unsimplified_fallback;
     stats["planning_seed"] = planning_seed_;
     stats["state_sampler_seed"] = state_sampler_seed;
     stats["rrt_connect_seed"] = rrt_connect_seed;
