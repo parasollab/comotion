@@ -494,6 +494,12 @@ protected:
                                  const std::vector<const Path *> &local_paths,
                                  std::vector<Path> &working_paths);
 
+    bool acceptLocalRepairPaths(
+        const std::shared_ptr<MultiRobotProblem> &sub_problem,
+        const std::vector<int> &involved_robots, int start_t, int end_t,
+        const std::vector<Path> &local_paths, bool apply_solution_to_paths,
+        std::vector<Path> &working_paths);
+
     RepairOutcome resolveConflictOnPaths(
         const SubproblemConflict &conflict,
         const Clock::time_point &solve_start, double global_time_limit,

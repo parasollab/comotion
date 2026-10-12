@@ -1177,21 +1177,21 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
                     auto status = planner->solve(strrt_wall);
                     if (status == ompl::base::PlannerStatus::EXACT_SOLUTION) {
                         auto local_paths = planner->getSolutionPaths();
-                        if (local_paths_out)
-                            *local_paths_out = local_paths;
-                        if (apply_solution_to_paths) {
-                            spliceSolutionIntoPaths(involved_robots, start_t,
-                                                    end_t, local_paths,
-                                                    working_paths);
+                        if (acceptLocalRepairPaths(
+                                sub_problem, involved_robots, start_t, end_t,
+                                local_paths, apply_solution_to_paths,
+                                working_paths)) {
+                            if (local_paths_out)
+                                *local_paths_out = local_paths;
+                            if (window_start_t_out)
+                                *window_start_t_out = start_t;
+                            if (window_end_t_out)
+                                *window_end_t_out = end_t;
+                            current_event.resolved = true;
+                            current_event.solved_by = "prioritized_strrt";
+                            current_event.outcome = "solved";
+                            return true;
                         }
-                        if (window_start_t_out)
-                            *window_start_t_out = start_t;
-                        if (window_end_t_out)
-                            *window_end_t_out = end_t;
-                        current_event.resolved = true;
-                        current_event.solved_by = "prioritized_strrt";
-                        current_event.outcome = "solved";
-                        return true;
                     }
                     if (isCancelled()) {
                         current_event.outcome = "cancelled";
@@ -1296,21 +1296,21 @@ bool ARC::solveSubproblemOnPaths(const SubproblemConflict &conflict,
                             local_paths = planner->getSolutionPaths();
                     }
                     if (status == ompl::base::PlannerStatus::EXACT_SOLUTION) {
-                        if (local_paths_out)
-                            *local_paths_out = local_paths;
-                        if (apply_solution_to_paths) {
-                            spliceSolutionIntoPaths(involved_robots, start_t,
-                                                    end_t, local_paths,
-                                                    working_paths);
+                        if (acceptLocalRepairPaths(
+                                sub_problem, involved_robots, start_t, end_t,
+                                local_paths, apply_solution_to_paths,
+                                working_paths)) {
+                            if (local_paths_out)
+                                *local_paths_out = local_paths;
+                            if (window_start_t_out)
+                                *window_start_t_out = start_t;
+                            if (window_end_t_out)
+                                *window_end_t_out = end_t;
+                            current_event.resolved = true;
+                            current_event.solved_by = "composite_rrt";
+                            current_event.outcome = "solved";
+                            return true;
                         }
-                        if (window_start_t_out)
-                            *window_start_t_out = start_t;
-                        if (window_end_t_out)
-                            *window_end_t_out = end_t;
-                        current_event.resolved = true;
-                        current_event.solved_by = "composite_rrt";
-                        current_event.outcome = "solved";
-                        return true;
                     }
                     if (isCancelled()) {
                         current_event.outcome = "cancelled";
@@ -1524,6 +1524,28 @@ void ARC::spliceSolutionIntoPaths(const std::vector<int> &involved_robots,
     const auto [sum_of_cost_timesteps, makespan_timesteps] =
         arcSolutionMetricsFromArrivalTimesteps(true_arrival_timesteps_);
     setSolutionMetrics(sum_of_cost_timesteps, makespan_timesteps);
+}
+
+bool ARC::acceptLocalRepairPaths(
+    const std::shared_ptr<MultiRobotProblem> &sub_problem,
+    const std::vector<int> &involved_robots, int start_t, int end_t,
+    const std::vector<Path> &local_paths, bool apply_solution_to_paths,
+    std::vector<Path> &working_paths) {
+    if (!sub_problem || local_paths.size() != involved_robots.size())
+        return false;
+
+    CompositePathValidationOptions validation_options;
+    validation_options.check_environment = true;
+    if (!sub_problem->collisionChecker().validateCompositePaths(
+            local_paths, sub_problem->robotModelPtrs(), validation_options)) {
+        return false;
+    }
+
+    if (apply_solution_to_paths) {
+        spliceSolutionIntoPaths(involved_robots, start_t, end_t, local_paths,
+                                working_paths);
+    }
+    return true;
 }
 
 ARC::RepairOutcome ARC::resolveConflictOnPaths(
